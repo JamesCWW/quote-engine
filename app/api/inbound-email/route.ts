@@ -51,19 +51,34 @@ export async function POST(req: NextRequest) {
   const plainBody = text ?? html?.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() ?? '';
   const rawInput = `Subject: ${subject}\n\nFrom: ${from}\n\n${plainBody}`.slice(0, 4000);
 
-  // Determine tenant from the recipient address (first match in tenants table)
   const supabase = createAdminClient();
   const recipientEmail = to[0];
 
-  const { data: tenant } = await supabase
+  // 1. Try to match by inbound_email address
+  let { data: tenant } = await supabase
     .from('tenants')
     .select('id')
     .eq('inbound_email', recipientEmail)
     .single();
 
-  if (!tenant) {
-    console.warn(`No tenant found for inbound email address: ${recipientEmail}`);
-    return NextResponse.json({ ok: true });
+  if (tenant) {
+    console.log(`[inbound-email] Matched tenant ${tenant.id} by inbound_email: ${recipientEmail}`);
+  } else {
+    // 2. Fall back to first tenant (single-tenant / testing mode)
+    const { data: firstTenant } = await supabase
+      .from('tenants')
+      .select('id')
+      .order('created_at', { ascending: true })
+      .limit(1)
+      .single();
+
+    if (!firstTenant) {
+      console.warn('[inbound-email] No tenants found in database');
+      return NextResponse.json({ ok: true });
+    }
+
+    console.log(`[inbound-email] No inbound_email match for ${recipientEmail} — falling back to default tenant ${firstTenant.id}`);
+    tenant = firstTenant;
   }
 
   const tenantId = tenant.id;
