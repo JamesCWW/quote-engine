@@ -33,8 +33,7 @@ export default async function DashboardPage() {
   ]);
 
   const monthlyQuotes = quotesThisMonth.data ?? [];
-  const wonThisMonth = monthlyQuotes.filter((q) => q.status === 'won');
-  const allQuotesData = allQuotes.data ?? [];
+const allQuotesData = allQuotes.data ?? [];
   const wonAll = allQuotesData.filter((q) => q.status === 'won');
 
   const totalThisMonth = monthlyQuotes.length;
