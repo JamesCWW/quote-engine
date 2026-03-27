@@ -133,12 +133,17 @@ const allQuotesData = allQuotes.data ?? [];
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {enquiries.map((e) => (
-                    <tr key={e.id} className="hover:bg-gray-50 transition-colors">
+                    <tr key={e.id} className="relative hover:bg-gray-50 transition-colors cursor-pointer">
                       <td className="px-4 py-3 text-gray-800 max-w-xs truncate">
-                        {e.raw_input?.slice(0, 80) ?? '—'}
+                        <Link
+                          href={`/dashboard/enquiries/${e.id}`}
+                          className="after:absolute after:inset-0"
+                        >
+                          {e.raw_input?.slice(0, 80) ?? '—'}
+                        </Link>
                       </td>
-                      <td className="px-4 py-3 text-gray-500 capitalize">{e.source}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 text-gray-500 capitalize relative">{e.source}</td>
+                      <td className="px-4 py-3 relative">
                         <span
                           className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${
                             STATUS_STYLES[e.status] ?? 'bg-gray-100 text-gray-500'
@@ -147,7 +152,7 @@ const allQuotesData = allQuotes.data ?? [];
                           {e.status}
                         </span>
                       </td>
-                      <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                      <td className="px-4 py-3 text-gray-400 whitespace-nowrap relative">
                         {new Date(e.created_at).toLocaleDateString('en-GB', {
                           day: 'numeric',
                           month: 'short',

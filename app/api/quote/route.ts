@@ -13,10 +13,12 @@ export async function POST(req: NextRequest) {
   if (!userId) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
 
   const body = await req.json();
-  const { enquiry_text, image_urls, tenant_id } = body as {
+  const { enquiry_text, image_urls, tenant_id, enquiry_id, assumptions } = body as {
     enquiry_text: string;
     image_urls?: string[];
     tenant_id: string;
+    enquiry_id?: string;
+    assumptions?: Array<{ label: string; value: string }>;
   };
 
   if (!enquiry_text || !tenant_id) {
@@ -25,24 +27,33 @@ export async function POST(req: NextRequest) {
 
   const supabase = createAdminClient();
 
-  // 1. Save the incoming enquiry
-  const { data: enquiry, error: enquiryError } = await supabase
-    .from('enquiries')
-    .insert({
-      tenant_id,
-      source: 'manual',
-      raw_input: enquiry_text,
-      image_urls: image_urls ?? [],
-      status: 'quoting',
-    })
-    .select('id')
-    .single();
+  // 1. Save the incoming enquiry (or reuse an existing one)
+  let enquiryId: string;
 
-  if (enquiryError) {
-    return NextResponse.json({ error: enquiryError.message }, { status: 500 });
+  if (enquiry_id) {
+    // Reuse existing enquiry (e.g. opened from dashboard detail page)
+    enquiryId = enquiry_id;
+    await supabase.from('enquiries').update({ status: 'quoting' }).eq('id', enquiry_id);
+  } else {
+    const { data: enquiry, error: enquiryError } = await supabase
+      .from('enquiries')
+      .insert({
+        tenant_id,
+        source: 'manual',
+        raw_input: enquiry_text,
+        image_urls: image_urls ?? [],
+        status: 'quoting',
+      })
+      .select('id')
+      .single();
+
+    if (enquiryError) {
+      return NextResponse.json({ error: enquiryError.message }, { status: 500 });
+    }
+    enquiryId = enquiry.id;
   }
 
-  // 2. Extract specs from first image if present
+  // 2. Extract specs from image if present
   let imageContext = '';
   if (image_urls && image_urls.length > 0) {
     try {
@@ -83,14 +94,20 @@ export async function POST(req: NextRequest) {
           .join('\n\n')}`
       : '\n\nNo similar historical jobs found in database — estimate from first principles.';
 
-  // 5. Generate quote with Claude Sonnet
+  // 5. Build assumptions context
+  const assumptionsSection =
+    assumptions && assumptions.length > 0
+      ? `\n\nConfirmed facts (treat these as certain — do not mark as missing info):\n${assumptions.map((a) => `- ${a.label}: ${a.value}`).join('\n')}`
+      : '';
+
+  // 6. Generate quote with Claude Sonnet
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
     messages: [
       {
         role: 'user',
-        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${fullEnquiryText}${similarContext}\n\nReturn only valid JSON.`,
+        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${fullEnquiryText}${assumptionsSection}${similarContext}\n\nReturn only valid JSON.`,
       },
     ],
   });
@@ -123,17 +140,18 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 6. Save to generated_quotes
+  // 7. Save to generated_quotes
   const { data: generatedQuote, error: gqError } = await supabase
     .from('generated_quotes')
     .insert({
       tenant_id,
-      enquiry_id: enquiry.id,
+      enquiry_id: enquiryId,
       similar_quote_ids: similarQuotes.map((q) => q.id),
       ai_reasoning: aiResult.reasoning,
       price_low: aiResult.price_low,
       price_high: aiResult.price_high,
       confidence: aiResult.confidence,
+      assumptions: assumptions && assumptions.length > 0 ? assumptions : null,
       status: 'draft',
     })
     .select('id')
@@ -153,11 +171,11 @@ export async function POST(req: NextRequest) {
       },
       status: 'quoted',
     })
-    .eq('id', enquiry.id);
+    .eq('id', enquiryId);
 
   return NextResponse.json({
     generated_quote_id: generatedQuote.id,
-    enquiry_id: enquiry.id,
+    enquiry_id: enquiryId,
     price_low: aiResult.price_low,
     price_high: aiResult.price_high,
     confidence: aiResult.confidence,
