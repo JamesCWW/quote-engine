@@ -1,6 +1,8 @@
 import { Webhook } from 'svix';
 import { NextRequest, NextResponse } from 'next/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { sanitiseText } from '@/lib/ai/sanitise';
+import { storeQuoteWithEmbedding } from '@/lib/ai/rag';
 
 interface ResendInboundPayload {
   type: string;
@@ -82,43 +84,21 @@ export async function POST(req: NextRequest) {
   }
 
   const tenantId = tenant.id;
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000';
 
-  // Sanitise via /api/sanitise
-  const sanitiseRes = await fetch(`${baseUrl}/api/sanitise`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ raw_text: rawInput, tenant_id: tenantId }),
-  });
-
-  if (!sanitiseRes.ok) {
-    console.error('Sanitise failed:', await sanitiseRes.text());
+  // Sanitise
+  let sanitised;
+  try {
+    sanitised = await sanitiseText(rawInput);
+  } catch (err) {
+    console.error('[inbound-email] Sanitise failed:', err);
     return NextResponse.json({ error: 'Sanitise step failed' }, { status: 500 });
   }
 
-  const { data: sanitised } = await sanitiseRes.json();
-  const description: string = sanitised?.description ?? rawInput;
-
-  // Embed via /api/embed
-  const embedRes = await fetch(`${baseUrl}/api/embed`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      tenant_id: tenantId,
-      raw_text: rawInput,
-      description,
-      product_type: sanitised?.product_type ?? null,
-      material: sanitised?.material ?? null,
-      dimensions: sanitised?.dimensions ?? null,
-      price_low: null,
-      price_high: null,
-      final_price: null,
-      status: 'unknown',
-    }),
-  });
-
-  if (!embedRes.ok) {
-    console.error('Embed failed:', await embedRes.text());
+  // Embed and store to quotes table for future RAG retrieval
+  try {
+    await storeQuoteWithEmbedding(tenantId, rawInput, sanitised);
+  } catch (err) {
+    console.error('[inbound-email] Embed/store failed:', err);
     return NextResponse.json({ error: 'Embed step failed' }, { status: 500 });
   }
 
@@ -133,7 +113,7 @@ export async function POST(req: NextRequest) {
       extracted_specs: {
         from,
         subject,
-        ...(sanitised ?? {}),
+        ...sanitised,
       },
       status: 'new',
     });

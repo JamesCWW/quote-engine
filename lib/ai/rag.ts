@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
 import { createAdminClient } from '@/lib/supabase/admin';
+import type { SanitisedQuote } from './sanitise';
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -78,6 +79,50 @@ export async function findSimilarGoldenQuotes(
 
   const golden = ((data ?? []) as SimilarQuote[]).filter((q) => q.is_golden);
   return golden.slice(0, limit);
+}
+
+/**
+ * Generates an embedding for the description and inserts a row into the quotes table.
+ * Returns the new quote's ID. Used by inbound channels (email, upload) that bypass
+ * the HTTP route layer.
+ */
+export async function storeQuoteWithEmbedding(
+  tenantId: string,
+  rawText: string,
+  sanitised: SanitisedQuote
+): Promise<string> {
+  const embeddingResponse = await openai.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: sanitised.description.slice(0, 2000),
+  });
+
+  const embedding = embeddingResponse.data[0].embedding;
+  const supabase = createAdminClient();
+
+  const quoteStatus = sanitised.status === 'unknown' ? 'draft' : sanitised.status;
+  const isGolden = sanitised.status === 'won';
+
+  const { data, error } = await supabase
+    .from('quotes')
+    .insert({
+      tenant_id: tenantId,
+      raw_text: rawText.slice(0, 2000),
+      description: sanitised.description,
+      product_type: sanitised.product_type,
+      material: sanitised.material,
+      dimensions: sanitised.dimensions,
+      price_low: sanitised.price_low,
+      price_high: sanitised.price_high,
+      final_price: sanitised.final_price,
+      status: quoteStatus,
+      is_golden: isGolden,
+      embedding,
+    })
+    .select('id')
+    .single();
+
+  if (error) throw new Error(error.message);
+  return data.id as string;
 }
 
 /**
