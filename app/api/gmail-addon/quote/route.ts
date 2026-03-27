@@ -1,6 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/supabase/admin';
 import { findSimilarQuotes } from '@/lib/ai/rag';
 import { QUOTE_GENERATOR_PROMPT } from '@/lib/ai/prompts';
 import { buildPricingContext } from '@/lib/ai/pricing';
@@ -10,8 +9,7 @@ const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 function validateApiKey(req: NextRequest): boolean {
   const authHeader = req.headers.get('authorization');
   if (!authHeader?.startsWith('Bearer ')) return false;
-  const key = authHeader.slice(7);
-  return key === process.env.GMAIL_ADDON_API_KEY;
+  return authHeader.slice(7) === process.env.GMAIL_ADDON_API_KEY;
 }
 
 export async function POST(req: NextRequest) {
@@ -20,10 +18,18 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { email_subject, email_body, tenant_id } = body as {
+  const {
+    email_subject,
+    email_body,
+    tenant_id,
+    complexity_multiplier = 1.0,
+    assumptions,
+  } = body as {
     email_subject: string;
     email_body: string;
     tenant_id: string;
+    complexity_multiplier?: number;
+    assumptions?: Array<{ label: string; value: string }>;
   };
 
   if (!email_body || !tenant_id) {
@@ -32,29 +38,9 @@ export async function POST(req: NextRequest) {
 
   const enquiry_text = email_subject ? `Subject: ${email_subject}\n\n${email_body}` : email_body;
 
-  const supabase = createAdminClient();
-
-  const { data: enquiry, error: enquiryError } = await supabase
-    .from('enquiries')
-    .insert({
-      tenant_id,
-      source: 'gmail_addon',
-      raw_input: enquiry_text,
-      image_urls: [],
-      status: 'quoting',
-    })
-    .select('id')
-    .single();
-
-  if (enquiryError) {
-    return NextResponse.json({ error: enquiryError.message }, { status: 500 });
-  }
-
-  const enquiryId = enquiry.id;
-
   const [similarQuotes, pricingResult] = await Promise.all([
     findSimilarQuotes(enquiry_text, tenant_id, 3),
-    buildPricingContext(enquiry_text, tenant_id).catch((err) => {
+    buildPricingContext(enquiry_text, tenant_id, complexity_multiplier).catch((err) => {
       console.error('Pricing context failed (non-fatal):', err);
       return { context: '', minimumValue: null };
     }),
@@ -75,7 +61,14 @@ export async function POST(req: NextRequest) {
 - Final price: ${q.final_price ? `£${q.final_price}` : 'Not recorded'}`
           )
           .join('\n\n')}`
-      : '\n\nNo similar historical jobs found in database — estimate from first principles.';
+      : '\n\nNo similar historical jobs found — estimate from first principles.';
+
+  const assumptionsSection =
+    assumptions && assumptions.length > 0
+      ? `\n\nConfirmed facts (treat as certain — do not mark as missing info):\n${assumptions
+          .map((a) => `- ${a.label}: ${a.value}`)
+          .join('\n')}`
+      : '';
 
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
@@ -83,7 +76,7 @@ export async function POST(req: NextRequest) {
     messages: [
       {
         role: 'user',
-        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${enquiry_text}${similarContext}\n\nReturn only valid JSON.`,
+        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${enquiry_text}${assumptionsSection}${similarContext}\n\nReturn only valid JSON.`,
       },
     ],
   });
@@ -123,40 +116,7 @@ export async function POST(req: NextRequest) {
     aiResult.reasoning += ` Note: Minimum job value of £${minimumValue.toLocaleString()} applied.`;
   }
 
-  const { data: generatedQuote, error: gqError } = await supabase
-    .from('generated_quotes')
-    .insert({
-      tenant_id,
-      enquiry_id: enquiryId,
-      similar_quote_ids: similarQuotes.map((q) => q.id),
-      ai_reasoning: aiResult.reasoning,
-      price_low: aiResult.price_low,
-      price_high: aiResult.price_high,
-      confidence: aiResult.confidence,
-      status: 'draft',
-    })
-    .select('id')
-    .single();
-
-  if (gqError) {
-    return NextResponse.json({ error: gqError.message }, { status: 500 });
-  }
-
-  await supabase
-    .from('enquiries')
-    .update({
-      extracted_specs: {
-        product_type: aiResult.product_type,
-        material: aiResult.material,
-        subject: email_subject ?? '',
-      },
-      status: 'quoted',
-    })
-    .eq('id', enquiryId);
-
   return NextResponse.json({
-    generated_quote_id: generatedQuote.id,
-    enquiry_id: enquiryId,
     price_low: aiResult.price_low,
     price_high: aiResult.price_high,
     confidence: aiResult.confidence,
@@ -164,5 +124,6 @@ export async function POST(req: NextRequest) {
     missing_info: aiResult.missing_info ?? [],
     product_type: aiResult.product_type,
     material: aiResult.material,
+    similar_quote_ids: similarQuotes.map((q) => q.id),
   });
 }

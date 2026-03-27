@@ -161,7 +161,11 @@ export interface PricingResult {
   minimumValue: number | null;
 }
 
-export async function buildPricingContext(userText: string, tenantId: string): Promise<PricingResult> {
+export async function buildPricingContext(
+  userText: string,
+  tenantId: string,
+  complexityMultiplier: number = 1.0
+): Promise<PricingResult> {
   if (!userText || userText.length < 15) return { context: '', minimumValue: null };
 
   const supabase = createAdminClient();
@@ -243,8 +247,12 @@ export async function buildPricingContext(userText: string, tenantId: string): P
       );
     }
     if (manufacture_days) {
-      const manufactureCost = manufacture_days * fabricationRate;
-      parts.push(`Manufacture: £${manufactureCost.toFixed(2)} (${manufacture_days} days × £${fabricationRate})`);
+      const adjustedDays = manufacture_days * complexityMultiplier;
+      const manufactureCost = adjustedDays * fabricationRate;
+      const multiplierNote = complexityMultiplier !== 1.0
+        ? ` — complexity multiplier ${complexityMultiplier}×`
+        : '';
+      parts.push(`Manufacture: £${manufactureCost.toFixed(2)} (${adjustedDays.toFixed(1)} days × £${fabricationRate}${multiplierNote})`);
     }
     if (minimum_value) {
       parts.push(`Minimum job value: £${minimum_value.toFixed(2)}`);
