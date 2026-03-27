@@ -108,10 +108,12 @@ export async function POST(req: Request) {
           })
       : Promise.resolve(''),
 
-    buildPricingContext(userContext, tenantId).catch((err) => {
-      console.error('Pricing context failed (non-fatal):', err);
-      return '';
-    }),
+    buildPricingContext(userContext, tenantId)
+      .then((r) => r.context)
+      .catch((err) => {
+        console.error('Pricing context failed (non-fatal):', err);
+        return '';
+      }),
   ]);
 
   const systemPrompt = buildChatbotSystemPrompt(

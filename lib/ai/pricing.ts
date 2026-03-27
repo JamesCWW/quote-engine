@@ -115,8 +115,13 @@ function extractDimensions(text: string): { width_mm: number | null; height_mm: 
   return { width_mm, height_mm };
 }
 
-export async function buildPricingContext(userText: string, tenantId: string): Promise<string> {
-  if (!userText || userText.length < 15) return '';
+export interface PricingResult {
+  context: string;
+  minimumValue: number | null;
+}
+
+export async function buildPricingContext(userText: string, tenantId: string): Promise<PricingResult> {
+  if (!userText || userText.length < 15) return { context: '', minimumValue: null };
 
   const supabase = createAdminClient();
 
@@ -133,7 +138,7 @@ export async function buildPricingContext(userText: string, tenantId: string): P
   ]);
 
   const rates: MasterRates | null = ratesRes.data as MasterRates | null;
-  if (!rates) return '';
+  if (!rates) return { context: '', minimumValue: null };
 
   const fabricationRate = rates.fabrication_day_rate;
   const installRate = rates.installation_day_rate;
@@ -228,7 +233,12 @@ export async function buildPricingContext(userText: string, tenantId: string): P
     parts.push(`Note: Always add automation equipment costs separately if electric gates requested. Consumer unit connection: £${rates.consumer_unit_connection.toFixed(2)}`);
   }
 
-  if (parts.length === 0) return '';
+  const minimumValue = jobTypeMatch?.minimum_value ?? null;
 
-  return `EXACT PRICING DATA — use these figures directly:\n${parts.join('\n')}`;
+  if (parts.length === 0) return { context: '', minimumValue };
+
+  return {
+    context: `EXACT PRICING DATA — use these figures directly:\n${parts.join('\n')}`,
+    minimumValue,
+  };
 }

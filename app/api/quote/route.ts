@@ -68,15 +68,15 @@ export async function POST(req: NextRequest) {
   const fullEnquiryText = enquiry_text + imageContext;
 
   // 3. RAG + pricing lookup — run in parallel
-  const [similarQuotes, pricingContext] = await Promise.all([
+  const [similarQuotes, pricingResult] = await Promise.all([
     findSimilarQuotes(fullEnquiryText, tenant_id, 3),
     buildPricingContext(fullEnquiryText, tenant_id).catch((err) => {
       console.error('Pricing context failed (non-fatal):', err);
-      return '';
+      return { context: '', minimumValue: null };
     }),
   ]);
 
-  const pricingSection = pricingContext ? `\n\n${pricingContext}` : '';
+  const pricingSection = pricingResult.context ? `\n\n${pricingResult.context}` : '';
 
   // 4. Build Sonnet context
   const similarContext =
@@ -140,7 +140,16 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 7. Save to generated_quotes
+  // 7. Enforce minimum job value if set for this job type
+  const minimumValue = pricingResult.minimumValue;
+  if (minimumValue && aiResult.price_low < minimumValue) {
+    aiResult.price_low = minimumValue;
+    aiResult.price_high = Math.round(minimumValue * 1.25);
+    aiResult.reasoning +=
+      ` Note: This job type has a minimum value of £${minimumValue.toLocaleString()}. Estimate adjusted accordingly.`;
+  }
+
+  // 8. Save to generated_quotes
   const { data: generatedQuote, error: gqError } = await supabase
     .from('generated_quotes')
     .insert({
