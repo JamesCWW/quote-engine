@@ -86,31 +86,72 @@ function detectCategory(text: string): string | null {
   return null;
 }
 
-// Extract rough dimensions from free text (e.g. "3m wide", "1800mm high")
+// Convert a raw numeric value + optional unit string to millimetres.
+// When no unit is given we use a heuristic:
+//   ≤ 30        → metres  (e.g. "3 wide")
+//   31 – 400    → cm      (e.g. "159 W" — typical gate dimension in cm)
+//   > 400       → mm      (e.g. "1800 high")
+function toMm(val: number, unit: string): number {
+  const u = unit.toLowerCase().trim();
+  if (u === 'mm') return Math.round(val);
+  if (u === 'm' || u === 'metre' || u === 'meter' || u === 'metres' || u === 'meters') return Math.round(val * 1000);
+  if (u === 'cm') return Math.round(val * 10);
+  if (u === 'ft' || u === 'feet' || u === "'") return Math.round(val * 304.8);
+  if (u === 'in' || u === 'inch' || u === 'inches' || u === '"') return Math.round(val * 25.4);
+  // No unit — heuristic
+  if (val <= 30) return Math.round(val * 1000);
+  if (val <= 400) return Math.round(val * 10);
+  return Math.round(val);
+}
+
+const UNIT_PATTERN = '(mm|cm|m|metres?|meters?|ft|feet|in|inches?|\'|")?';
+const NUM_PATTERN = '(\\d+(?:\\.\\d+)?)';
+
+// Extract rough dimensions from free text.
+// Handles: "3m wide", "1800mm high", "6ft wide", "159 W & 248 H", "159W x 248H", standalone W/H
 function extractDimensions(text: string): { width_mm: number | null; height_mm: number | null } {
   let width_mm: number | null = null;
   let height_mm: number | null = null;
 
-  // Match patterns like "3m wide", "3000mm wide", "3 metres wide"
-  const widthMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:mm|m|metre|meter)?\s*(?:wide|width|w\b)/i);
-  if (widthMatch) {
-    const val = parseFloat(widthMatch[1]);
-    width_mm = val > 100 ? val : Math.round(val * 1000);
+  // 1. Combined "N[unit] W … N[unit] H" pattern (e.g. "159 W & 248 H", "3m W x 2m H")
+  const wxhRe = new RegExp(
+    NUM_PATTERN + '\\s*' + UNIT_PATTERN + '\\s*[Ww]\\b.*?' +
+    NUM_PATTERN + '\\s*' + UNIT_PATTERN + '\\s*[Hh]\\b',
+    'i'
+  );
+  const wxhMatch = text.match(wxhRe);
+  if (wxhMatch) {
+    width_mm  = toMm(parseFloat(wxhMatch[1]), wxhMatch[2] ?? '');
+    height_mm = toMm(parseFloat(wxhMatch[3]), wxhMatch[4] ?? '');
   }
 
-  // Match patterns like "1.8m high", "1800mm tall", "6ft high"
-  const heightMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:mm|m|metre|meter)?\s*(?:high|height|tall|h\b)/i);
-  if (heightMatch) {
-    const val = parseFloat(heightMatch[1]);
-    height_mm = val > 100 ? val : Math.round(val * 1000);
+  // 2. Explicit "wide / width" keyword
+  if (!width_mm) {
+    const re = new RegExp(NUM_PATTERN + '\\s*' + UNIT_PATTERN + '\\s*(?:wide|width)', 'i');
+    const m = text.match(re);
+    if (m) width_mm = toMm(parseFloat(m[1]), m[2] ?? '');
   }
 
-  // Feet conversions (e.g. "6ft", "6'")
-  const ftMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:ft|feet|')\s*(?:wide|width|w\b)/i);
-  if (ftMatch && !width_mm) width_mm = Math.round(parseFloat(ftMatch[1]) * 304.8);
+  // 3. Explicit "high / height / tall" keyword
+  if (!height_mm) {
+    const re = new RegExp(NUM_PATTERN + '\\s*' + UNIT_PATTERN + '\\s*(?:high|height|tall)', 'i');
+    const m = text.match(re);
+    if (m) height_mm = toMm(parseFloat(m[1]), m[2] ?? '');
+  }
 
-  const ftHeightMatch = text.match(/(\d+(?:\.\d+)?)\s*(?:ft|feet|')\s*(?:high|height|tall|h\b)/i);
-  if (ftHeightMatch && !height_mm) height_mm = Math.round(parseFloat(ftHeightMatch[1]) * 304.8);
+  // 4. Standalone "N W" (where W is not part of a larger word)
+  if (!width_mm) {
+    const re = new RegExp(NUM_PATTERN + '\\s*' + UNIT_PATTERN + '\\s+[Ww](?=[\\s&x,]|$)', 'i');
+    const m = text.match(re);
+    if (m) width_mm = toMm(parseFloat(m[1]), m[2] ?? '');
+  }
+
+  // 5. Standalone "N H"
+  if (!height_mm) {
+    const re = new RegExp(NUM_PATTERN + '\\s*' + UNIT_PATTERN + '\\s+[Hh](?=[\\s&x,]|$)', 'i');
+    const m = text.match(re);
+    if (m) height_mm = toMm(parseFloat(m[1]), m[2] ?? '');
+  }
 
   return { width_mm, height_mm };
 }

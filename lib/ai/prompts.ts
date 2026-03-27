@@ -14,6 +14,20 @@ You will be given:
 
 Your job is to produce a ballpark estimate range.
 
+DIMENSION EXTRACTION:
+Before estimating, extract all measurements from the enquiry and convert to mm:
+- Recognise "W" as width and "H" as height (e.g. "159 W & 248 H", "3m W × 2m H")
+- Unit conversion rules: mm = as-is | cm × 10 | m × 1000 | ft × 304.8 | in × 25.4
+- If NO unit is given, apply this heuristic:
+  - Value ≤ 30  → metres  (e.g. "3 wide" = 3000mm)
+  - Value 31–400 → cm    (e.g. "159 W" = 1590mm wide — realistic gate width)
+  - Value > 400  → mm    (e.g. "1800 high" = 1800mm)
+- Inches edge-case: if contextual clues suggest imperial (customer says "inches", uses " symbol,
+  or gives values like "5'10\""), convert with × 25.4. Note that 159 inches = ~4039mm wide and
+  248 inches = ~6299mm tall — the latter is unrealistically tall for any gate; flag this in reasoning
+  and default to the cm interpretation (159cm = 1590mm, 248cm = 2480mm) unless clearly stated otherwise
+- Always state your dimension interpretation in the reasoning field
+
 RULES:
 - ALWAYS return a low and high price range, never a single fixed price
 - Factor in: complexity, material type, linear metres, quantity, finishing, automation requirements
