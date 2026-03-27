@@ -154,6 +154,8 @@ export default function EnquiryDetailClient({
           product_type: result.product_type,
           material: result.material,
           assumptions: getIncludedAssumptions(),
+          quote_mode: result.quote_mode,
+          missing_info: result.missing_info,
         }),
       });
 
@@ -316,6 +318,7 @@ export default function EnquiryDetailClient({
             enquiryText={rawInput}
             tenantId={tenantId}
             onReset={handleReset}
+            onAddDetails={result.quote_mode === 'rough' ? handleReset : undefined}
           />
 
           {/* Draft reply section */}

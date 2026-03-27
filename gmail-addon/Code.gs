@@ -521,6 +521,8 @@ function onInsertReply(event) {
       product_type:  q.product_type,
       material:      q.material,
       tone:          tone,
+      quote_mode:    q.quote_mode || 'precise',
+      missing_info:  q.missing_info || [],
     });
 
     if (result.code !== 200) {
@@ -579,6 +581,24 @@ function buildResultCard_(q, threadCount, messageId) {
           .setText('ℹ️ Thread context: ' + threadCount + ' email' + (threadCount !== 1 ? 's' : '') + ' analysed'))
     );
   }
+
+  // ── Mode indicator ───────────────────────────────────────────────────────
+  var modeSection = CardService.newCardSection();
+  if (q.quote_mode === 'rough') {
+    modeSection
+      .addWidget(CardService.newTextParagraph()
+        .setText('📊 Rough estimate — provide details for accuracy'))
+      .addWidget(
+        CardService.newTextButton()
+          .setText('➕  Add Details for Precise Estimate')
+          .setOnClickAction(CardService.newAction().setFunctionName('onShowAssumptions'))
+      );
+  } else {
+    modeSection.addWidget(
+      CardService.newTextParagraph().setText('🎯 Precise estimate — based on confirmed specs')
+    );
+  }
+  card.addSection(modeSection);
 
   // ── Price ────────────────────────────────────────────────────────────────
   var priceSection = CardService.newCardSection().setHeader('💰 Price Estimate');

@@ -92,6 +92,69 @@ ${similarQuotesContext || 'No similar jobs found yet — use your best judgement
 `;
 }
 
+export function detectQuoteMode(
+  enquiryText: string,
+  assumptions?: Array<{ label: string; value: string }>
+): 'rough' | 'precise' {
+  if (assumptions && assumptions.length > 0) return 'precise';
+
+  const text = enquiryText.toLowerCase();
+
+  const hasDimensions =
+    /\d+\s*(mm|cm|m\b|ft|feet|inch|in\b|"|')/.test(text) ||
+    /\b(width|height|wide|high|long|length)\b/.test(text) ||
+    /\d+\s*[wx×]\s*\d/.test(text);
+
+  const hasMaterial = /\b(mild steel|aluminium|aluminum|stainless steel)\b/.test(text);
+
+  return hasDimensions || hasMaterial ? 'precise' : 'rough';
+}
+
+const ROUGH_ESTIMATE_RANGES = `
+ROUGH ESTIMATE RANGES — use when no dimensions are available:
+Product type                       | Low    | High    | Unit
+Manual iron driveway gates         | £2,500 | £5,500  | per job
+Automated iron driveway gates      | £10,500| £14,000 | per job
+Manual aluminium driveway gates    | £1,800 | £4,500  | per job
+Automated aluminium driveway gates | £4,000 | £8,000  | per job
+Iron pedestrian gate               | £800   | £2,000  | per job
+Aluminium pedestrian gate          | £400   | £1,200  | per job
+Railings with posts                | £150   | £350    | per linear metre installed
+Wall top railings                  | £80    | £180    | per linear metre installed
+Handrails for steps                | £200   | £600    | per job
+Juliette balcony                   | £800   | £2,500  | per job
+
+Never quote below the Low value for each product type.
+If product type is unclear, return the widest applicable range.
+`;
+
+export const ROUGH_QUOTE_GENERATOR_PROMPT = `
+You are an expert estimator for Helions Forge, a bespoke metalwork manufacturer.
+
+You have been given a customer enquiry where dimensions or confirmed specifications are NOT yet available.
+Your task: identify the likely product type and return the appropriate rough ballpark range from the table below.
+${ROUGH_ESTIMATE_RANGES}
+RULES:
+- Set confidence to "low" — no dimensions means no precise estimate is possible
+- Use the FULL low–high range from the table for the identified product type
+- Do NOT narrow the range — the wide range communicates uncertainty appropriately
+- In missing_info, list all the specific questions needed to produce an accurate estimate
+  (e.g. overall width, height, number of leaves, electric or manual, automation type, installation method)
+- If automation keywords are present (electric, automated, remote, motor), use the automated range
+- If multiple product types are possible, use the widest applicable range
+
+Return JSON only, no surrounding text:
+{
+  "price_low": number,
+  "price_high": number,
+  "confidence": "low",
+  "reasoning": "string (1-2 sentences: product type identified and range from table used)",
+  "missing_info": ["specific question 1", "specific question 2"],
+  "product_type": "string",
+  "material": "string (or 'Not specified')"
+}
+`;
+
 export const SANITISER_PROMPT = `
 You are a data cleaning assistant for a metalwork quoting system.
 

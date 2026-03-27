@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { createAdminClient } from '@/lib/supabase/admin';
 import { findSimilarQuotes, extractSpecsFromImage } from '@/lib/ai/rag';
-import { QUOTE_GENERATOR_PROMPT } from '@/lib/ai/prompts';
+import { QUOTE_GENERATOR_PROMPT, ROUGH_QUOTE_GENERATOR_PROMPT, detectQuoteMode } from '@/lib/ai/prompts';
 import { buildPricingContext } from '@/lib/ai/pricing';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -67,13 +67,17 @@ export async function POST(req: NextRequest) {
 
   const fullEnquiryText = enquiry_text + imageContext;
 
-  // 3. RAG + pricing lookup — run in parallel
+  const quoteMode = detectQuoteMode(fullEnquiryText, assumptions);
+
+  // 3. RAG + pricing lookup — pricing only needed for precise mode
   const [similarQuotes, pricingResult] = await Promise.all([
     findSimilarQuotes(fullEnquiryText, tenant_id, 3),
-    buildPricingContext(fullEnquiryText, tenant_id).catch((err) => {
-      console.error('Pricing context failed (non-fatal):', err);
-      return { context: '', minimumValue: null };
-    }),
+    quoteMode === 'precise'
+      ? buildPricingContext(fullEnquiryText, tenant_id).catch((err) => {
+          console.error('Pricing context failed (non-fatal):', err);
+          return { context: '', minimumValue: null };
+        })
+      : Promise.resolve({ context: '', minimumValue: null }),
   ]);
 
   const pricingSection = pricingResult.context ? `\n\n${pricingResult.context}` : '';
@@ -107,7 +111,7 @@ export async function POST(req: NextRequest) {
     messages: [
       {
         role: 'user',
-        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${fullEnquiryText}${assumptionsSection}${similarContext}\n\nReturn only valid JSON.`,
+        content: `${quoteMode === 'precise' ? QUOTE_GENERATOR_PROMPT : ROUGH_QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${fullEnquiryText}${assumptionsSection}${similarContext}\n\nReturn only valid JSON.`,
       },
     ],
   });
@@ -193,5 +197,6 @@ export async function POST(req: NextRequest) {
     product_type: aiResult.product_type,
     material: aiResult.material,
     similar_quotes: similarQuotes,
+    quote_mode: quoteMode,
   });
 }

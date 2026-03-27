@@ -25,6 +25,7 @@ export interface QuoteResultData {
   product_type: string;
   material: string;
   similar_quotes: SimilarQuote[];
+  quote_mode?: 'rough' | 'precise';
 }
 
 interface Props {
@@ -32,6 +33,7 @@ interface Props {
   enquiryText: string;
   tenantId: string;
   onReset: () => void;
+  onAddDetails?: () => void;
 }
 
 const CONFIDENCE_STYLES: Record<string, string> = {
@@ -44,7 +46,7 @@ function fmt(n: number) {
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: 0 }).format(n);
 }
 
-export default function QuoteResult({ result, enquiryText, tenantId, onReset }: Props) {
+export default function QuoteResult({ result, enquiryText, tenantId, onReset, onAddDetails }: Props) {
   const [showModal, setShowModal] = useState(false);
   const [finalPrice, setFinalPrice] = useState(
     String(Math.round((result.price_low + result.price_high) / 2))
@@ -106,6 +108,28 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset }: 
     <div className="space-y-6">
       {/* Price range */}
       <div className="rounded-lg border border-gray-200 bg-white p-6">
+        {result.quote_mode && (
+          <div className="flex items-center justify-between gap-3 mb-4 pb-4 border-b border-gray-100">
+            <span className={`text-xs px-2.5 py-1 rounded-full font-medium border ${
+              result.quote_mode === 'rough'
+                ? 'bg-amber-50 text-amber-700 border-amber-200'
+                : 'bg-blue-50 text-blue-700 border-blue-200'
+            }`}>
+              {result.quote_mode === 'rough'
+                ? '📊 Rough estimate — provide details for accuracy'
+                : '🎯 Precise estimate — based on confirmed specs'}
+            </span>
+            {result.quote_mode === 'rough' && onAddDetails && (
+              <button
+                onClick={onAddDetails}
+                className="text-xs text-gray-500 underline hover:text-gray-700 flex-shrink-0"
+              >
+                Add details →
+              </button>
+            )}
+          </div>
+        )}
+
         <div className="flex items-start justify-between gap-4">
           <div>
             <p className="text-sm text-gray-500 mb-1">Estimated range</p>

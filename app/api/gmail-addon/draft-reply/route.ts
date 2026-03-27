@@ -21,16 +21,27 @@ export async function POST(req: NextRequest) {
   }
 
   const body = await req.json();
-  const { email_subject, email_body, price_low, price_high, product_type, material, tone = 'friendly' } =
-    body as {
-      email_subject: string;
-      email_body: string;
-      price_low: number;
-      price_high: number;
-      product_type: string;
-      material: string;
-      tone?: 'formal' | 'friendly' | 'quick';
-    };
+  const {
+    email_subject,
+    email_body,
+    price_low,
+    price_high,
+    product_type,
+    material,
+    tone = 'friendly',
+    quote_mode,
+    missing_info,
+  } = body as {
+    email_subject: string;
+    email_body: string;
+    price_low: number;
+    price_high: number;
+    product_type: string;
+    material: string;
+    tone?: 'formal' | 'friendly' | 'quick';
+    quote_mode?: string;
+    missing_info?: string[];
+  };
 
   if (!email_body || !price_low || !price_high) {
     return NextResponse.json(
@@ -42,6 +53,12 @@ export async function POST(req: NextRequest) {
   const toneInstruction = TONE_INSTRUCTIONS[tone] ?? TONE_INSTRUCTIONS.friendly;
 
   const isQuick = tone === 'quick';
+  const isRough = quote_mode === 'rough';
+
+  const questionsList =
+    missing_info && missing_info.length > 0
+      ? missing_info.map((q) => `- ${q}`).join('\n')
+      : '- Overall dimensions (width × height)\n- Manual or electric?\n- Installation requirements';
 
   const prompt = `You are writing a reply on behalf of Helions Forge, a bespoke metalwork manufacturer based in the UK. Use UK English spelling.
 
@@ -50,9 +67,18 @@ TONE: ${toneInstruction}
 ${
   isQuick
     ? `Write a brief 2-3 sentence reply that:
-- Gives the price range: "Based on your enquiry, we estimate £${price_low.toLocaleString()} – £${price_high.toLocaleString()} + VAT"
+- Gives the price range: "${isRough ? `As a rough ballpark, this type of project typically ranges from £${price_low.toLocaleString()} to £${price_high.toLocaleString()} + VAT` : `Based on your enquiry, we estimate £${price_low.toLocaleString()} – £${price_high.toLocaleString()} + VAT`}"
 - States the next step (site visit or call)
 - Sign off: "Kind regards, The Helions Forge Team"`
+    : isRough
+    ? `Write a concise reply using this structure:
+1. Brief thank you for their enquiry
+2. Include verbatim: "As a rough ballpark figure, this type of project typically ranges from £${price_low.toLocaleString()} to £${price_high.toLocaleString()} + VAT, depending on specification, complexity and installation requirements."
+3. A short paragraph starting with "To provide you with a more accurate estimate, it would be helpful to know:" followed by these questions:
+${questionsList}
+4. Include verbatim: "We'd be happy to arrange a free site visit if that would be easier."
+5. Sign off: "Kind regards,\\nThe Helions Forge Team"
+Keep it to 3-4 short paragraphs. Questions may be listed.`
     : `Write a concise reply that:
 - Thanks the customer briefly for their enquiry
 - Confirms what they asked about (${product_type}${material ? `, ${material}` : ''})

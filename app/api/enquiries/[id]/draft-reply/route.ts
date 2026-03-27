@@ -17,8 +17,40 @@ function buildDraftPrompt(
   priceLow: number,
   priceHigh: number,
   assumptions: Assumption[],
-  originalSubject: string
+  originalSubject: string,
+  quoteMode?: string,
+  missingInfo?: string[]
 ): string {
+  const subjectLine = `Re: ${originalSubject || 'Your metalwork enquiry'}`;
+
+  if (quoteMode === 'rough') {
+    const questionsList =
+      missingInfo && missingInfo.length > 0
+        ? missingInfo.map((q) => `- ${q}`).join('\n')
+        : '- Overall dimensions (width × height)\n- Manual or electric?\n- Installation requirements';
+
+    return `You are writing a professional email reply on behalf of Helions Forge, a bespoke metalwork manufacturer based in the UK. Use UK English spelling.
+
+Write a concise, friendly reply using this exact structure:
+1. Brief thank you for their enquiry
+2. Include this sentence verbatim: "As a rough ballpark figure, this type of project typically ranges from £${priceLow.toLocaleString()} to £${priceHigh.toLocaleString()} + VAT, depending on specification, complexity and installation requirements."
+3. A short paragraph starting with "To provide you with a more accurate estimate, it would be helpful to know:" followed by these questions (as a short list):
+${questionsList}
+4. Include this sentence verbatim: "We'd be happy to arrange a free site visit if that would be easier."
+5. Sign off: "Kind regards,\\nThe Helions Forge Team"
+
+Keep it to 3–4 short paragraphs. No bullet points in the body prose, but the questions may be listed.
+
+Customer enquiry:
+${enquiryText.slice(0, 1500)}
+
+Return ONLY a JSON object with exactly two fields:
+{
+  "subject": "${subjectLine}",
+  "body": "the full email body text"
+}`;
+  }
+
   const assumptionLines =
     assumptions.length > 0
       ? `\n\nFor the purposes of this estimate we have assumed the following:\n${assumptions.map((a) => `- ${a.label}: ${a.value}`).join('\n')}`
@@ -41,7 +73,7 @@ ${enquiryText.slice(0, 1500)}
 
 Return ONLY a JSON object with exactly two fields:
 {
-  "subject": "Re: ${originalSubject || 'Your metalwork enquiry'}",
+  "subject": "${subjectLine}",
   "body": "the full email body text"
 }`;
 }
@@ -60,12 +92,16 @@ export async function POST(
     product_type,
     material,
     assumptions,
+    quote_mode,
+    missing_info,
   } = body as {
     price_low: number;
     price_high: number;
     product_type: string;
     material: string;
     assumptions: Assumption[];
+    quote_mode?: string;
+    missing_info?: string[];
   };
 
   const supabase = createAdminClient();
@@ -90,7 +126,9 @@ export async function POST(
     price_low,
     price_high,
     assumptions,
-    originalSubject
+    originalSubject,
+    quote_mode,
+    missing_info
   );
 
   const message = await anthropic.messages.create({

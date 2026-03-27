@@ -1,7 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
 import { findSimilarQuotes } from '@/lib/ai/rag';
-import { QUOTE_GENERATOR_PROMPT } from '@/lib/ai/prompts';
+import { QUOTE_GENERATOR_PROMPT, ROUGH_QUOTE_GENERATOR_PROMPT, detectQuoteMode } from '@/lib/ai/prompts';
 import { buildPricingContext } from '@/lib/ai/pricing';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -38,12 +38,16 @@ export async function POST(req: NextRequest) {
 
   const enquiry_text = email_subject ? `Subject: ${email_subject}\n\n${email_body}` : email_body;
 
+  const quoteMode = detectQuoteMode(enquiry_text, assumptions);
+
   const [similarQuotes, pricingResult] = await Promise.all([
     findSimilarQuotes(enquiry_text, tenant_id, 3),
-    buildPricingContext(enquiry_text, tenant_id, complexity_multiplier).catch((err) => {
-      console.error('Pricing context failed (non-fatal):', err);
-      return { context: '', minimumValue: null };
-    }),
+    quoteMode === 'precise'
+      ? buildPricingContext(enquiry_text, tenant_id, complexity_multiplier).catch((err) => {
+          console.error('Pricing context failed (non-fatal):', err);
+          return { context: '', minimumValue: null };
+        })
+      : Promise.resolve({ context: '', minimumValue: null }),
   ]);
 
   const pricingSection = pricingResult.context ? `\n\n${pricingResult.context}` : '';
@@ -76,7 +80,7 @@ export async function POST(req: NextRequest) {
     messages: [
       {
         role: 'user',
-        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${enquiry_text}${assumptionsSection}${similarContext}\n\nReturn only valid JSON.`,
+        content: `${quoteMode === 'precise' ? QUOTE_GENERATOR_PROMPT : ROUGH_QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${enquiry_text}${assumptionsSection}${similarContext}\n\nReturn only valid JSON.`,
       },
     ],
   });
@@ -125,5 +129,6 @@ export async function POST(req: NextRequest) {
     product_type: aiResult.product_type,
     material: aiResult.material,
     similar_quote_ids: similarQuotes.map((q) => q.id),
+    quote_mode: quoteMode,
   });
 }
