@@ -10,6 +10,7 @@ interface ResendInboundPayload {
     from: string;
     to: string[];
     subject: string;
+    date?: string;
     html?: string;
     text?: string;
     attachments?: unknown[];
@@ -43,15 +44,26 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 });
   }
 
+  console.log('[inbound-email] Full payload:', JSON.stringify(payload, null, 2));
+
   if (payload.type !== 'email.received') {
     return NextResponse.json({ ok: true });
   }
 
-  const { from, to, subject, html, text } = payload.data;
+  const { from, to, subject, date, html, text } = payload.data;
 
-  // Combine subject + body into a single text block
-  const plainBody = text ?? html?.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim() ?? '';
-  const rawInput = `Subject: ${subject}\n\nFrom: ${from}\n\n${plainBody}`.slice(0, 4000);
+  // Extract body text: prefer plain text, fall back to stripped HTML, then sentinel
+  let plainBody: string;
+  if (text && text.trim()) {
+    plainBody = text.trim();
+  } else if (html && html.trim()) {
+    plainBody = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  } else {
+    plainBody = 'No email body found';
+  }
+
+  const emailDate = date ?? new Date().toISOString();
+  const rawInput = `Subject: ${subject}\nFrom: ${from}\nDate: ${emailDate}\n\n${plainBody}`.slice(0, 4000);
 
   const supabase = createAdminClient();
   const recipientEmail = to[0];
