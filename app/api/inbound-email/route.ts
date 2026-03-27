@@ -7,14 +7,22 @@ import { storeQuoteWithEmbedding } from '@/lib/ai/rag';
 interface ResendInboundPayload {
   type: string;
   data: {
+    email_id: string;
     from: string;
     to: string[];
     subject: string;
     date?: string;
-    html?: string;
-    text?: string;
-    attachments?: unknown[];
   };
+}
+
+interface ResendEmailResponse {
+  id: string;
+  from: string;
+  to: string[];
+  subject: string;
+  text?: string;
+  html?: string;
+  created_at: string;
 }
 
 export async function POST(req: NextRequest) {
@@ -52,19 +60,41 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
-  const { from, to, subject, date, html, text } = payload.data;
+  const { email_id, from, to, subject, date } = payload.data;
+
+  // Fetch full email content from Resend API using the email_id
+  const resendApiKey = process.env.RESEND_API_KEY;
+  if (!resendApiKey) {
+    console.error('[inbound-email] RESEND_API_KEY is not set');
+    return NextResponse.json({ error: 'Resend API key not configured' }, { status: 500 });
+  }
+
+  let emailData: ResendEmailResponse;
+  try {
+    const resendRes = await fetch(`https://api.resend.com/emails/${email_id}`, {
+      headers: { Authorization: `Bearer ${resendApiKey}` },
+    });
+    if (!resendRes.ok) {
+      throw new Error(`Resend API returned ${resendRes.status}`);
+    }
+    emailData = await resendRes.json();
+    console.log('Resend email fetch response:', JSON.stringify(emailData, null, 2));
+  } catch (err) {
+    console.error('[inbound-email] Failed to fetch email from Resend:', err);
+    return NextResponse.json({ error: 'Failed to fetch email content' }, { status: 500 });
+  }
 
   // Extract body text: prefer plain text, fall back to stripped HTML, then sentinel
   let plainBody: string;
-  if (text && text.trim()) {
-    plainBody = text.trim();
-  } else if (html && html.trim()) {
-    plainBody = html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  if (emailData.text && emailData.text.trim()) {
+    plainBody = emailData.text.trim();
+  } else if (emailData.html && emailData.html.trim()) {
+    plainBody = emailData.html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
   } else {
     plainBody = 'No email body found';
   }
 
-  const emailDate = date ?? new Date().toISOString();
+  const emailDate = date ?? emailData.created_at ?? new Date().toISOString();
   const rawInput = `Subject: ${subject}\nFrom: ${from}\nDate: ${emailDate}\n\n${plainBody}`.slice(0, 4000);
 
   const supabase = createAdminClient();
