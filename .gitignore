@@ -39,3 +39,5 @@ next-env.d.ts
 scripts/token.json
 scripts/processed-threads.json
 scripts/import-errors.log
+credentials.json
+scripts/token.json
