@@ -34,6 +34,8 @@ export async function POST(req: NextRequest) {
   const wh = new Webhook(secret);
   let payload: ResendInboundPayload;
 
+  console.log('Raw Resend body:', rawBody);
+
   try {
     payload = wh.verify(rawBody, {
       'svix-id': svixId,
@@ -44,7 +46,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Invalid webhook signature' }, { status: 401 });
   }
 
-  console.log('[inbound-email] Full payload:', JSON.stringify(payload, null, 2));
+  console.log('Full Resend payload:', JSON.stringify(payload, null, 2));
 
   if (payload.type !== 'email.received') {
     return NextResponse.json({ ok: true });
