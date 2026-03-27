@@ -1,0 +1,170 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { findSimilarQuotes, extractSpecsFromImage } from '@/lib/ai/rag';
+import { QUOTE_GENERATOR_PROMPT } from '@/lib/ai/prompts';
+import { buildPricingContext } from '@/lib/ai/pricing';
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+export async function POST(req: NextRequest) {
+  const { userId } = await auth();
+  if (!userId) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
+
+  const body = await req.json();
+  const { enquiry_text, image_urls, tenant_id } = body as {
+    enquiry_text: string;
+    image_urls?: string[];
+    tenant_id: string;
+  };
+
+  if (!enquiry_text || !tenant_id) {
+    return NextResponse.json({ error: 'enquiry_text and tenant_id are required' }, { status: 400 });
+  }
+
+  const supabase = createAdminClient();
+
+  // 1. Save the incoming enquiry
+  const { data: enquiry, error: enquiryError } = await supabase
+    .from('enquiries')
+    .insert({
+      tenant_id,
+      source: 'manual',
+      raw_input: enquiry_text,
+      image_urls: image_urls ?? [],
+      status: 'quoting',
+    })
+    .select('id')
+    .single();
+
+  if (enquiryError) {
+    return NextResponse.json({ error: enquiryError.message }, { status: 500 });
+  }
+
+  // 2. Extract specs from first image if present
+  let imageContext = '';
+  if (image_urls && image_urls.length > 0) {
+    try {
+      const specs = await extractSpecsFromImage(image_urls[0]);
+      if (specs) imageContext = `\n\nPhoto analysis: ${specs}`;
+    } catch (err) {
+      console.error('Vision extraction failed:', err);
+      // Non-fatal: continue without image context
+    }
+  }
+
+  const fullEnquiryText = enquiry_text + imageContext;
+
+  // 3. RAG + pricing lookup — run in parallel
+  const [similarQuotes, pricingContext] = await Promise.all([
+    findSimilarQuotes(fullEnquiryText, tenant_id, 3),
+    buildPricingContext(fullEnquiryText, tenant_id).catch((err) => {
+      console.error('Pricing context failed (non-fatal):', err);
+      return '';
+    }),
+  ]);
+
+  const pricingSection = pricingContext ? `\n\n${pricingContext}` : '';
+
+  // 4. Build Sonnet context
+  const similarContext =
+    similarQuotes.length > 0
+      ? `\n\nSimilar historical jobs:\n${similarQuotes
+          .map(
+            (q, i) =>
+              `Job ${i + 1} (similarity: ${(q.similarity * 100).toFixed(0)}%${q.is_golden ? ', WON' : ''}):
+- Type: ${q.product_type ?? 'Unknown'}
+- Material: ${q.material ?? 'Unknown'}
+- Description: ${q.description}
+- Price range: £${q.price_low ?? '?'} – £${q.price_high ?? '?'}
+- Final price: ${q.final_price ? `£${q.final_price}` : 'Not recorded'}`
+          )
+          .join('\n\n')}`
+      : '\n\nNo similar historical jobs found in database — estimate from first principles.';
+
+  // 5. Generate quote with Claude Sonnet
+  const message = await anthropic.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: `${QUOTE_GENERATOR_PROMPT}${pricingSection}\n\nNew enquiry:\n${fullEnquiryText}${similarContext}\n\nReturn only valid JSON.`,
+      },
+    ],
+  });
+
+  const content = message.content[0];
+  if (content.type !== 'text') {
+    return NextResponse.json({ error: 'Unexpected AI response' }, { status: 500 });
+  }
+
+  let aiResult: {
+    price_low: number;
+    price_high: number;
+    confidence: 'low' | 'medium' | 'high';
+    reasoning: string;
+    missing_info: string[];
+    product_type: string;
+    material: string;
+  };
+
+  try {
+    const jsonText = content.text
+      .replace(/^```(?:json)?\n?/, '')
+      .replace(/\n?```$/, '')
+      .trim();
+    aiResult = JSON.parse(jsonText);
+  } catch {
+    return NextResponse.json(
+      { error: 'Failed to parse AI response', raw: content.text },
+      { status: 500 }
+    );
+  }
+
+  // 6. Save to generated_quotes
+  const { data: generatedQuote, error: gqError } = await supabase
+    .from('generated_quotes')
+    .insert({
+      tenant_id,
+      enquiry_id: enquiry.id,
+      similar_quote_ids: similarQuotes.map((q) => q.id),
+      ai_reasoning: aiResult.reasoning,
+      price_low: aiResult.price_low,
+      price_high: aiResult.price_high,
+      confidence: aiResult.confidence,
+      status: 'draft',
+    })
+    .select('id')
+    .single();
+
+  if (gqError) {
+    return NextResponse.json({ error: gqError.message }, { status: 500 });
+  }
+
+  // Update enquiry with extracted specs
+  await supabase
+    .from('enquiries')
+    .update({
+      extracted_specs: {
+        product_type: aiResult.product_type,
+        material: aiResult.material,
+      },
+      status: 'quoted',
+    })
+    .eq('id', enquiry.id);
+
+  return NextResponse.json({
+    generated_quote_id: generatedQuote.id,
+    enquiry_id: enquiry.id,
+    price_low: aiResult.price_low,
+    price_high: aiResult.price_high,
+    confidence: aiResult.confidence,
+    reasoning: aiResult.reasoning,
+    missing_info: aiResult.missing_info ?? [],
+    product_type: aiResult.product_type,
+    material: aiResult.material,
+    similar_quotes: similarQuotes,
+  });
+}

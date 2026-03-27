@@ -1,0 +1,46 @@
+material,kg_per_unit,unit_cost_gbp
+Square Bar 10mm x 10mm x 6m ,4.94,7.50
+Square Bar  12mm x 12mm x 6m ,7.06,9.80
+Square Bar  14mm x 14mm x 6m ,9.75,17.00
+Square Bar  16mm x 16mm x 6m ,12.5,17.40
+Square Bar  20mm x 20mm x 6m ,19.6,26.30
+Square Bar  25mm x 25mm x 6m ,30.3,42.70
+Square Bar  30mm x 30mm x 6m ,43.4,68.50
+Square Bar  40mm x 40mm x 6m ,76.9,159.50
+Round Bar  6mm x 6mm x 6m ,1.42,2.30
+Round Bar  8mm x 8mm x 6m ,2.44,4.10
+Round Bar  10mm x 10mm x 6m ,3.79,5.80
+Round Bar  12mm x 12mm x 6m ,5.6,7.60
+Round Bar  14mm x 14mm x 6m ,7.53,13.60
+Round Bar  16mm x 16mm x 6m ,9.87,12.90
+Round Bar  20mm x 20mm x 6m ,15.44,20.80
+Round 25mm x 25mm x 6m ,24.06,32.20
+Round 30mm x 30mm x 6m ,34.7,47.90
+Flat Bar 20mm x 10mm x 6m ,10,14.60
+Flat Bar 30mm x 6mm x 6m ,9,11.70
+Flat Bar 30mm x 10mm x 6m ,14.92,19.60
+Flat Bar 40mm x 10mm x 6m ,20,26.10
+Flat Bar 50mm x 10mm x 6m ,25,32.10
+Flat Bar 60mm x 10mm x 6m ,30,37.70
+Flat Bar 70mm x 6mm x 6m ,20.8,27.30
+Flat Bar 70mm x 10mm x 6m ,35.7,45.20
+Flat Bar 80mm x 10mm x 6m ,38.3,55.10
+Convex 51mm x 13mm x 6m ,26.31,76.60
+SHS 20mm x 20mm x 2.5mm x 7.5m ,10.125,13.80
+SHS 25mm x 25mm x 3mm x 7.5m ,15.3,20.80
+SHS 30mm x 30mm x 3mm x 7.5m ,18.83,25.30
+SHS 40mm x 40mm x 4mm x 7.5m ,33.45,44.60
+SHS 50mm x 50mm x 3mm x 7.5m ,13.17,22.70
+SHS 60mm x 60mm x 5mm x 7.5m ,64.05,86.20
+SHS 70mm x 70mm x 5mm x 7.5m ,75.75,99.50
+SHS 80mm x 80mm x 6mm x 7.5m ,109,155.20
+SHS 90mm x 90mm x 6mm x 7.5m ,125,170.60
+SHS 100mm x 100mm x 6mm x 7.5m ,132,170.30
+SHS 120mm x 120mm x 6mm x 7.5m ,194.9,215.00
+SHS 150mm x 150mm x 5mm x 7.5m ,170.25,253.40
+RHS 50mm x 25mm x 3mm x 7.5m ,24.15,32.30
+RHS 50mm x 30mm x 3mm x 7.5m ,25.87,34.30
+RHS 60mm x 30mm x 3mm x 7.5m ,29.1,39.70
+RHS 60mm x 40mm x 4mm x 7.5m ,42.89,56.50
+RHS 100mm x 50mm x 5mm x 7.5m ,81.77,108.00
+Railheads,0.33,1.2

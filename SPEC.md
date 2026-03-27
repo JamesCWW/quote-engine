@@ -124,311 +124,16 @@ CREATE POLICY "tenant_isolation" ON quotes
 
 ---
 
-## Phase 1 — Project Setup & Database
+# Phase 1 - Completed
 
-**Goal:** Working Next.js app with Supabase, Clerk, and database schema. No AI yet.
+## Phase 2 - Completed
 
-### Tasks
+## Phase 3 — Completed
 
-- [ ] **1.1** Scaffold Next.js 14 app with App Router
-  ```bash
-  npx create-next-app@latest helions-forge --typescript --tailwind --app
-  ```
+## Phase 4 — Completed
 
-- [ ] **1.2** Install dependencies
-  ```bash
-  npm install @clerk/nextjs @supabase/supabase-js @supabase/ssr ai @anthropic-ai/sdk openai
-  npm install @radix-ui/react-dialog @radix-ui/react-select lucide-react class-variance-authority
-  npx shadcn@latest init
-  ```
 
-- [ ] **1.3** Set up environment variables (`.env.local`)
-  ```
-  NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
-  CLERK_SECRET_KEY=
-  NEXT_PUBLIC_SUPABASE_URL=
-  NEXT_PUBLIC_SUPABASE_ANON_KEY=
-  SUPABASE_SERVICE_ROLE_KEY=
-  ANTHROPIC_API_KEY=
-  OPENAI_API_KEY=
-  AIRTABLE_API_KEY=
-  AIRTABLE_BASE_ID=
-  ```
-
-- [ ] **1.4** Configure Clerk middleware (`middleware.ts`) protecting `/dashboard` routes
-
-- [ ] **1.5** Set up Supabase client helpers:
-  - `lib/supabase/client.ts` — browser client
-  - `lib/supabase/server.ts` — server client using Clerk JWT
-  - `lib/supabase/admin.ts` — service role client (for edge functions only)
-
-- [ ] **1.6** Run database schema migration (paste schema from above into Supabase SQL editor)
-
-- [ ] **1.7** Enable pgvector extension in Supabase dashboard (Database → Extensions → vector)
-
-- [ ] **1.8** Create an index on the embedding column for fast similarity search:
-  ```sql
-  CREATE INDEX ON quotes USING ivfflat (embedding vector_cosine_ops) WITH (lists = 100);
-  ```
-
-- [ ] **1.9** Seed the tenants table with Helions Forge entry:
-  ```sql
-  INSERT INTO tenants (name, clerk_org_id) VALUES ('Helions Forge', 'YOUR_CLERK_ORG_ID');
-  ```
-
-- [ ] **1.10** Basic folder structure:
-  ```
-  /app
-    /(auth)
-      /sign-in
-      /sign-up
-    /(dashboard)
-      /layout.tsx        ← Clerk org check
-      /page.tsx          ← Dashboard home
-      /enquiries/
-      /quotes/
-      /materials/
-      /upload/
-    /api/
-      /quote/route.ts
-      /embed/route.ts
-      /sanitise/route.ts
-  /components
-    /ui/                 ← shadcn components
-    /quoting/
-    /layout/
-  /lib
-    /supabase/
-    /ai/
-      /prompts.ts
-      /rag.ts
-      /sanitise.ts
-  ```
-
-**Test checkpoint:** Can log in with Clerk, see a blank dashboard, and Supabase tables exist.
-
----
-
-## Phase 2 — Data Upload & Sanitisation Pipeline
-
-**Goal:** Upload old quotes/emails, strip PII, store cleaned data with embeddings ready for RAG search.
-
-### Tasks
-
-- [ ] **2.1** Build `/dashboard/upload` page with:
-  - Paste text area (for email copy-paste)
-  - PDF/text file upload (Supabase Storage)
-  - Submit button
-
-- [ ] **2.2** Create the Sanitiser prompt in `lib/ai/prompts.ts`:
-  ```typescript
-  export const SANITISER_PROMPT = `
-  You are a data cleaning assistant for a metalwork quoting system.
-  
-  Given raw email or quote text, extract and return ONLY a JSON object with:
-  - product_type: string (e.g. "Balustrade", "Staircase", "Gate", "Railing")
-  - material: string (e.g. "316 Stainless Steel", "Mild Steel Powder Coated")
-  - description: string (clean job description, no personal details)
-  - dimensions: object with any relevant measurements found (length_m, height_m, width_m, qty, etc.)
-  - price_low: number or null (lowest price mentioned in GBP)
-  - price_high: number or null (highest price mentioned in GBP)
-  - final_price: number or null (agreed/invoiced price if mentioned)
-  - status: "won" | "lost" | "unknown"
-  
-  CRITICAL RULES:
-  - Remove ALL names, phone numbers, email addresses, postcodes, and street addresses
-  - Replace with placeholders: [CUSTOMER], [SITE_ADDRESS], [PHONE], [EMAIL]
-  - Keep all technical specs, dimensions, materials, and prices
-  - Return ONLY valid JSON, no explanation text
-  `;
-  ```
-
-- [ ] **2.3** Create `/api/sanitise/route.ts` — POST endpoint that:
-  - Accepts `{ raw_text: string, tenant_id: string }`
-  - Calls Claude Haiku with SANITISER_PROMPT
-  - Returns structured JSON
-
-- [ ] **2.4** Create `/api/embed/route.ts` — POST endpoint that:
-  - Accepts cleaned quote data
-  - Generates embedding via OpenAI `text-embedding-3-small` on the description field
-  - Inserts full record + embedding into `quotes` table
-
-- [ ] **2.5** Wire upload form → sanitise API → embed API → success confirmation
-
-- [ ] **2.6** Build `/dashboard/quotes` list page showing all stored quotes with:
-  - Product type, material, price range, status badges
-  - "Mark as Golden" toggle button
-  - Basic search/filter by product type
-
-- [ ] **2.7** Batch upload tool — allow CSV upload with columns:
-  `raw_text` (one row per quote/email). Processes each row through sanitise → embed pipeline.
-
-**Test checkpoint:** Upload 10 sample old quotes, verify they appear cleaned and structured in the quotes table with embeddings stored.
-
----
-
-## Phase 3 — RAG Quoting Engine (Core AI Feature)
-
-**Goal:** New enquiry comes in → AI finds similar historical quotes → generates price range estimate.
-
-### Tasks
-
-- [ ] **3.1** Create the RAG search function in `lib/ai/rag.ts`:
-  ```typescript
-  // Takes new enquiry text, returns top 3 similar historical quotes for this tenant
-  export async function findSimilarQuotes(
-    enquiryText: string,
-    tenantId: string,
-    limit = 3
-  ): Promise<Quote[]>
-  // 1. Generate embedding for enquiryText
-  // 2. Run Supabase vector similarity search filtered by tenant_id
-  // 3. Prioritise is_golden = true results
-  // 4. Return top N matches with similarity scores
-  ```
-
-  Supabase RPC for vector search:
-  ```sql
-  CREATE OR REPLACE FUNCTION match_quotes(
-    query_embedding vector(1536),
-    match_tenant_id UUID,
-    match_count INT DEFAULT 3
-  )
-  RETURNS TABLE (
-    id UUID, product_type TEXT, material TEXT, description TEXT,
-    price_low DECIMAL, price_high DECIMAL, final_price DECIMAL,
-    similarity FLOAT
-  )
-  LANGUAGE plpgsql AS $$
-  BEGIN
-    RETURN QUERY
-    SELECT q.id, q.product_type, q.material, q.description,
-           q.price_low, q.price_high, q.final_price,
-           1 - (q.embedding <=> query_embedding) AS similarity
-    FROM quotes q
-    WHERE q.tenant_id = match_tenant_id
-    ORDER BY q.embedding <=> query_embedding
-    LIMIT match_count;
-  END;
-  $$;
-  ```
-
-- [ ] **3.2** Create the Quoting prompt in `lib/ai/prompts.ts`:
-  ```typescript
-  export const QUOTE_GENERATOR_PROMPT = `
-  You are an expert estimator for Helions Forge, a bespoke metalwork manufacturer.
-  
-  You will be given:
-  1. A new customer enquiry (text and/or extracted specs from a photo)
-  2. Up to 3 similar historical jobs we have completed, with their prices
-  
-  Your job is to produce a ballpark estimate range.
-  
-  RULES:
-  - ALWAYS return a low and high price range, never a single fixed price
-  - Factor in: complexity, material type, linear metres, quantity, finishing
-  - If historical data is thin or specs are unclear, widen the range and lower confidence
-  - Confidence levels: "high" (clear specs + strong match), "medium" (partial match), "low" (guessing)
-  - Note any missing information that would sharpen the estimate
-  - Keep response concise and professional
-  
-  Return JSON:
-  {
-    "price_low": number,
-    "price_high": number,
-    "confidence": "low" | "medium" | "high",
-    "reasoning": "string (2-3 sentences explaining the estimate)",
-    "missing_info": ["list of clarifying questions if needed"],
-    "product_type": "string",
-    "material": "string"
-  }
-  `;
-  ```
-
-- [ ] **3.3** Create `/api/quote/route.ts` — main quoting endpoint:
-  - Accepts `{ enquiry_text: string, image_urls?: string[], tenant_id: string }`
-  - Runs `findSimilarQuotes()` to get top 3 matches
-  - If image_urls present, first calls Claude Sonnet vision to extract specs from photo
-  - Calls Claude Sonnet with QUOTE_GENERATOR_PROMPT + similar quotes context
-  - Saves to `generated_quotes` table
-  - Returns full quote response
-
-- [ ] **3.4** Build `/dashboard/enquiries/new` page:
-  - Text area for job description
-  - Photo upload (stores to Supabase Storage, returns URL)
-  - Submit → calls `/api/quote`
-  - Shows loading state during processing
-
-- [ ] **3.5** Build Quote Result component showing:
-  - Price range (large, prominent)
-  - Confidence badge (colour coded: green/amber/red)
-  - AI reasoning paragraph
-  - "Similar Jobs Used" section showing the 3 matched historical quotes
-  - Missing info / clarifying questions list
-  - **Approve & Send** button | **Edit Price** button
-
-- [ ] **3.6** Human review flow:
-  - "Edit Price" opens modal to set final_price
-  - "Approve" marks status = 'approved' and saves final_price
-  - On approval: auto-creates a new entry in `quotes` table using this job as future training data (the self-improvement loop)
-
-- [ ] **3.7** Photo-to-quote vision extraction:
-  ```typescript
-  // Before calling main quote endpoint, extract specs from image
-  export async function extractSpecsFromImage(imageUrl: string): Promise<string>
-  // Prompt: "Describe the metalwork in this image. Note: product type, 
-  // approximate dimensions, material type, finish, fixings visible, 
-  // complexity level. Be specific about what you can see."
-  ```
-
-**Test checkpoint:** Submit a test enquiry (text + photo), verify AI returns a sensible price range with similar quotes shown, approve it and verify it saves back to quotes table.
-
----
-
-## Phase 4 — Dashboard Polish & Materials Management
-
-**Goal:** Full usable internal tool for Helions Forge daily use.
-
-### Tasks
-
-- [ ] **4.1** Dashboard home (`/dashboard`) showing:
-  - Stats: Total quotes this month, Win rate, Average quote value
-  - Recent enquiries list (last 10)
-  - Quick "New Enquiry" button
-
-- [ ] **4.2** `/dashboard/materials` page:
-  - Table of all materials with current rate per unit
-  - Add / Edit / Delete material rows
-  - "Last updated" timestamp
-  - Note: these rates feed into the quoting context so AI is aware of current prices
-
-- [ ] **4.3** Airtable → Supabase nightly sync:
-  - Supabase Edge Function (`functions/sync-materials/index.ts`)
-  - Fetches Airtable base via REST API
-  - Upserts into `materials` table by `tenant_id`
-  - Triggered by pg_cron or Supabase scheduled function (daily at midnight)
-
-- [ ] **4.4** Include live material rates in quoting prompt:
-  - Before generating quote, fetch current materials from DB
-  - Inject into QUOTE_GENERATOR_PROMPT as "Current Material Rates" section
-
-- [ ] **4.5** `/dashboard/quotes` full management page:
-  - Filter by status, product type, date range
-  - Mark as Golden
-  - Tag lost reasons (price_too_high, lost_to_competitor, project_cancelled)
-  - Export to CSV
-
-- [ ] **4.6** Quote history for each enquiry (side panel showing all version edits)
-
-- [ ] **4.7** Basic email notification (via Resend) when a quote is approved:
-  - Sends summary to team member email
-  - Not customer-facing yet
-
-**Test checkpoint:** Full end-to-end flow works cleanly. Materials update and next quote reflects new rates.
-
----
-
-## Phase 5 — Website Chatbot Widget
+## Phase 5 — Completed
 
 **Goal:** Customer-facing AI quote assistant embeddable on the Helions Forge website.
 
@@ -526,17 +231,17 @@ CREATE POLICY "tenant_isolation" ON quotes
 
 ---
 
-## Phase 7 — Email Inbound Pipeline (Automation)
+## Phase 7 — Completed
 
 **Goal:** Automate ingestion — emails sent to a quotes inbox auto-appear in dashboard.
 
 ### Tasks
 
-- [ ] **7.1** Set up Resend inbound email:
+- [x] **7.1** Set up Resend inbound email:
   - Configure `quotes@helionsforge.com` inbound webhook
   - Points to Supabase Edge Function URL
 
-- [ ] **7.2** Supabase Edge Function `functions/process-email/index.ts`:
+- [x] **7.2** Supabase Edge Function `functions/process-email/index.ts`:
   - Receives Resend webhook payload
   - Extracts email body text + any attachments
   - Calls sanitise API (Claude Haiku)
@@ -544,15 +249,15 @@ CREATE POLICY "tenant_isolation" ON quotes
   - Inserts into `enquiries` table with `source: 'email'`
   - Triggers Supabase Realtime notification to dashboard
 
-- [ ] **7.3** Attachment handling:
+- [x] **7.3** Attachment handling:
   - If PDF attached, extract text using edge function
   - If image attached, store URL and flag for vision processing
 
-- [ ] **7.4** Duplicate detection:
+- [x] **7.4** Duplicate detection:
   - Before inserting, check if similar embedding already exists (similarity > 0.95)
   - If duplicate, flag rather than create new row
 
-- [ ] **7.5** Thread awareness:
+- [x] **7.5** Thread awareness:
   - Group emails by subject thread
   - Link reply emails to original enquiry row
 
@@ -594,3 +299,95 @@ When starting a new Claude Code session for a phase:
 - "All Supabase queries must include `.eq('tenant_id', tenantId)` filter"
 - "Use `claude-haiku-4-5` for sanitisation, `claude-sonnet-4-6` for quote generation"
 - "Always return price as a range `{ price_low, price_high }` never a single value"
+---
+
+## Planned Improvements & Future Phases
+
+### Accuracy Improvements (after full Gmail import complete)
+- Guided quoting wizard: after initial estimate, show clarifying 
+  questions as a step-by-step popup modal. User answers each 
+  question, AI recalculates with tighter range and higher confidence
+- Confidence scoring by data density — auto low confidence 
+  if fewer than 5 similar jobs exist for that product type
+- Seasonal/date weighting — more recent won jobs weighted higher 
+  than older ones so prices reflect current market
+- Material price awareness — when Airtable rates update, flag 
+  estimates that used old rates
+- Win/loss pattern learning — if jobs in a certain price bracket 
+  are consistently lost, AI adjusts ranges accordingly
+- Photo analysis confidence boost — confidence automatically 
+  increases when image is provided as visual data reduces ambiguity
+
+### UX Improvements
+- Quick copy button for formatted estimate summary
+- Customer name + job reference field on enquiry form
+- Customer estimate history — see all previous estimates 
+  for the same customer
+- One-click duplicate quote for similar jobs
+- Mobile optimised layout for on-site use
+
+### Materials Improvements
+- Bulk CSV import for materials table
+- CSV columns: name, unit, rate_gbp, length_m, weight_per_unit
+- Common lengths: 6m or 7.5m (configurable per material)
+- Weight field for steel sections (kg per metre or per unit)
+- Full material cost calculation using weight x rate x length
+
+### Gmail Import Improvements
+- Bulk status editor — after import completes, quickly mark 
+  jobs as won/lost/unknown in bulk to correct dashboard stats
+- Re-run import periodically to catch new emails automatically
+
+### Phase 8 — Gmail Integration (both options)
+
+Option A — Gmail Add-on (sidebar inside Gmail):
+- Sidebar panel appears inside Gmail when viewing 
+  a customer email
+- Shows AI estimate and suggested reply in the panel
+- One click inserts formatted response with price range 
+  into compose window
+- Works like Gmail's built-in "Polish" feature
+- Users can choose this OR Option B based on preference
+
+Option B — Email forwarding (auto pipeline):
+- Forward customer email to quotes@helionsforge.com
+- Auto-appears in dashboard as new enquiry, pre-processed
+- "Draft Reply" button generates professional response 
+  with price range ready to copy back into Gmail
+- Built as part of Phase 7 inbound email pipeline
+
+Recommend building Option B in Phase 7 and Option A 
+after launch as Phase 8.
+
+### Phase 9 — Helions Forge Business App Integration
+
+Existing app stack: Next.js, Airtable, Clerk, Vercel
+Airtable base: "Helions Forge"
+Tables: LEADS, JOBS, QUOTES, EQUIPMENT AND STOCK, 
+        SUPPLIERS, PRODUCTS, PENDING ACTIONS, TASKS, 
+        NOTIFICATIONS, SETTINGS, DAYS_LOG, INVOICES
+
+Integration approach — Airtable as shared data layer:
+
+On quote approved in Quote Engine:
+- Auto-create record in LEADS table with:
+  customer name, product type, estimate range, 
+  job reference, source (quote engine), date
+
+On lead converted to job:
+- Create QUOTES record with final approved price
+- Create JOBS record linked to quote
+
+On job marked complete/won:
+- Webhook back to Quote Engine
+- Mark as golden training data in quotes table
+- Update win rate statistics on dashboard
+
+Full business loop:
+Enquiry → AI Estimate → Approve → Lead → Quote 
+→ Job → Invoice → Golden Training Data 
+→ Better Future Estimates
+
+Note: Both apps share Clerk auth so same login works 
+across both. Integration to be scoped properly once 
+Phase 5-7 are complete.

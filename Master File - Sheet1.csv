@@ -1,0 +1,25 @@
+item,rate_gbp,minimum_value,calculation,manufacture_days,install_days,engineer
+Manufacturer Day Rate,507,,,,,
+Installer Day Rate,523.84,,,,,
+Galvanising Cost,,,total_kg*1.2,,,
+Powder Coating,,,(width*height)*65,,,
+Customer requires us to connect power to consumer unit,435,,,,,
+Automated Double Iron Driveway Gates electric,,10500,,,4,2
+manual double iron driveway gates,,,,,2,2
+Aluminium pedestrian gates brick to brick,,,,,1,1
+aluminium pedestrian gates with concrete in posts,,,,,2,1
+aluminium driveway gates manual operated brick to brick install,,,,,1,2
+aluminium driveway gates manual operated with concrete in posts,,,,,2,2
+aluminium driveway gates electric ,,,,,4,2
+sliding electric aluminium gates,,,,,5,2
+sliding manual aluminium gates,,,,,3,2
+Sliding Iron driveway gates electric,,,,,5,2
+sliding iron driveway gates manual,,,,,4,2
+railings with posts up to 10 meters,,,,,2,2
+railings with posts 11 to 20 meters,,,,,4,2
+wall top railings up to 10 meters,,,,,1,2
+small handrails for steps,,,,,1,2
+juliette balcony railings up to 5 meters,,,,,2,2
+juliette and terrace balconies 6 to 10 meters,,,,,3,2
+railings per 2 meters,,,,1,,
+handrails per 2 meters,,,,1,,

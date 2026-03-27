@@ -34,3 +34,8 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# scripts — OAuth token and state files
+scripts/token.json
+scripts/processed-threads.json
+scripts/import-errors.log
