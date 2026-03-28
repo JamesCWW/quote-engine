@@ -113,13 +113,18 @@ export async function POST(req: NextRequest) {
           return { context: '', minimumValue: null };
         })
       : Promise.resolve({ context: '', minimumValue: null }),
-    supabase
-      .from('master_rates')
-      .select('fabrication_day_rate, installation_day_rate')
-      .eq('tenant_id', tenant_id)
-      .single()
-      .then((r) => r.data)
-      .catch(() => null),
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from('master_rates')
+          .select('fabrication_day_rate, installation_day_rate')
+          .eq('tenant_id', tenant_id)
+          .single();
+        return data;
+      } catch {
+        return null;
+      }
+    })(),
     hasRailingDims
       ? calculateRailingMaterials(railing_dims!, tenant_id).catch((err) => {
           console.error('Material takeoff failed (non-fatal):', err);
