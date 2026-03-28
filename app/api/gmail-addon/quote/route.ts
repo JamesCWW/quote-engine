@@ -4,6 +4,7 @@ import { createAdminClient } from '@/lib/supabase/admin';
 import { findSimilarQuotes, type SimilarQuote } from '@/lib/ai/rag';
 import { QUOTE_GENERATOR_PROMPT, ROUGH_QUOTE_GENERATOR_PROMPT, detectQuoteMode } from '@/lib/ai/prompts';
 import { buildPricingContext } from '@/lib/ai/pricing';
+import { enforceMinimumPrices } from '@/lib/ai/minimum-prices';
 import {
   calculateRailingMaterials,
   calculateRailingLabour,
@@ -82,15 +83,13 @@ export async function POST(req: NextRequest) {
           return { context: '', minimumValue: null };
         })
       : Promise.resolve({ context: '', minimumValue: null }),
-    hasRailingDims
-      ? Promise.resolve(
-          createAdminClient()
-            .from('master_rates')
-            .select('fabrication_day_rate, installation_day_rate')
-            .eq('tenant_id', tenant_id)
-            .single()
-        ).then((r) => r.data).catch(() => null)
-      : Promise.resolve(null),
+    createAdminClient()
+      .from('master_rates')
+      .select('fabrication_day_rate, installation_day_rate')
+      .eq('tenant_id', tenant_id)
+      .single()
+      .then((r) => r.data)
+      .catch(() => null),
     hasRailingDims
       ? calculateRailingMaterials(railing_dims!, tenant_id).catch((err) => {
           console.error('Material takeoff failed (non-fatal):', err);
@@ -153,7 +152,7 @@ export async function POST(req: NextRequest) {
   console.log('[gmail-addon/quote] Step 5: Calling Claude API');
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
-    max_tokens: 1024,
+    max_tokens: 4000,
     messages: [
       {
         role: 'user',
@@ -213,12 +212,8 @@ export async function POST(req: NextRequest) {
     });
   }
 
-  const minimumValue = pricingResult.minimumValue;
-  if (minimumValue && aiResult.price_low < minimumValue) {
-    aiResult.price_low = minimumValue;
-    aiResult.price_high = Math.round(minimumValue * 1.25);
-    aiResult.reasoning += ` Note: Minimum job value of £${minimumValue.toLocaleString()} applied.`;
-  }
+  // Enforce minimum job value
+  enforceMinimumPrices(aiResult, enquiry_text);
 
   // If Claude didn't return cost_breakdown but we have the data, build it server-side
   let costBreakdown: CostBreakdown | undefined = aiResult.cost_breakdown;
