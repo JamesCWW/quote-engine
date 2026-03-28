@@ -26,10 +26,13 @@ function isRailingProduct(productType: string | undefined, emailBody: string): b
 }
 
 export async function POST(req: NextRequest) {
+  try {
+  console.log('[gmail-addon/quote] Step 1: Auth check');
   if (!validateApiKey(req)) {
     return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
   }
 
+  console.log('[gmail-addon/quote] Step 2: Parsing request body');
   const body = await req.json();
   const {
     email_subject,
@@ -54,6 +57,7 @@ export async function POST(req: NextRequest) {
   const enquiry_text = email_subject ? `Subject: ${email_subject}\n\n${email_body}` : email_body;
 
   const quoteMode = detectQuoteMode(enquiry_text, assumptions);
+  console.log('[gmail-addon/quote] Step 3: Quote mode:', quoteMode);
 
   // Detect if this is a railing job with full dimensions for material takeoff
   const productTypeAssumption = assumptions?.find((a) =>
@@ -66,8 +70,12 @@ export async function POST(req: NextRequest) {
     isRailingProduct(productTypeAssumption, email_body);
 
   // Fetch master rates and run material takeoff in parallel when applicable
+  console.log('[gmail-addon/quote] Step 4: Fetching RAG + pricing + material takeoff');
   const [similarQuotes, pricingResult, masterRates, railingCalc] = await Promise.all([
-    findSimilarQuotes(enquiry_text, tenant_id, 3),
+    findSimilarQuotes(enquiry_text, tenant_id, 3).catch((err) => {
+      console.error('[gmail-addon/quote] RAG findSimilarQuotes failed (non-fatal):', err);
+      return [] as SimilarQuote[];
+    }),
     quoteMode === 'precise' && !hasRailingDims
       ? buildPricingContext(enquiry_text, tenant_id, complexity_multiplier).catch((err) => {
           console.error('Pricing context failed (non-fatal):', err);
@@ -90,6 +98,8 @@ export async function POST(req: NextRequest) {
         })
       : Promise.resolve(null),
   ]);
+
+  console.log('[gmail-addon/quote] Step 4 complete: similarQuotes count:', (similarQuotes as SimilarQuote[]).length);
 
   // Build railing labour once we have master rates and material breakdown
   const railingLabour =
@@ -140,6 +150,7 @@ export async function POST(req: NextRequest) {
           .join('\n')}`
       : '';
 
+  console.log('[gmail-addon/quote] Step 5: Calling Claude API');
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
@@ -232,6 +243,7 @@ export async function POST(req: NextRequest) {
     };
   }
 
+  console.log('[gmail-addon/quote] Step complete: returning response');
   return NextResponse.json({
     price_low: aiResult.price_low,
     price_high: aiResult.price_high,
@@ -247,4 +259,10 @@ export async function POST(req: NextRequest) {
     ...(aiResult.options?.length ? { options: aiResult.options } : {}),
     ...(aiResult.job_components?.length ? { job_components: aiResult.job_components } : {}),
   });
+  } catch (error) {
+    const err = error as Error;
+    console.error('[gmail-addon/quote] FAILED:', err.message);
+    console.error('[gmail-addon/quote] Stack:', err.stack);
+    return NextResponse.json({ error: err.message, stack: err.stack }, { status: 500 });
+  }
 }

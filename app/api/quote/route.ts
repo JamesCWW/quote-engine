@@ -21,10 +21,14 @@ function isRailingProduct(productType: string | undefined, enquiryText: string):
 }
 
 export async function POST(req: NextRequest) {
+  try {
+  console.log('Step 1: Auth check');
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
 
+  console.log('Step 2: Parsing request body');
   const body = await req.json();
+  console.log('Body received:', JSON.stringify(body));
   const { enquiry_text, image_urls, tenant_id, enquiry_id, assumptions, railing_dims } = body as {
     enquiry_text: string;
     image_urls?: string[];
@@ -38,11 +42,13 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'enquiry_text and tenant_id are required' }, { status: 400 });
   }
 
+  console.log('Step 3: Creating Supabase client');
   const supabase = createAdminClient();
 
   // 1. Save the incoming enquiry (or reuse an existing one)
   let enquiryId: string;
 
+  console.log('Step 4: Saving/reusing enquiry');
   if (enquiry_id) {
     enquiryId = enquiry_id;
     await supabase.from('enquiries').update({ status: 'quoting' }).eq('id', enquiry_id);
@@ -60,12 +66,15 @@ export async function POST(req: NextRequest) {
       .single();
 
     if (enquiryError) {
+      console.error('Enquiry insert error:', enquiryError);
       return NextResponse.json({ error: enquiryError.message }, { status: 500 });
     }
     enquiryId = enquiry.id;
   }
+  console.log('Enquiry ID:', enquiryId);
 
   // 2. Extract specs from image if present
+  console.log('Step 5: Image extraction (if applicable)');
   let imageContext = '';
   if (image_urls && image_urls.length > 0) {
     try {
@@ -91,8 +100,12 @@ export async function POST(req: NextRequest) {
     isRailingProduct(productTypeAssumption, fullEnquiryText);
 
   // 3. RAG + pricing + material takeoff in parallel
+  console.log('Step 6: Fetching RAG + pricing + material takeoff');
   const [similarQuotes, pricingResult, masterRates, railingCalc] = await Promise.all([
-    findSimilarQuotes(fullEnquiryText, tenant_id, 3),
+    findSimilarQuotes(fullEnquiryText, tenant_id, 3).catch((err) => {
+      console.error('RAG findSimilarQuotes failed (non-fatal):', err);
+      return [] as SimilarQuote[];
+    }),
     quoteMode === 'precise' && !hasRailingDims
       ? buildPricingContext(fullEnquiryText, tenant_id).catch((err) => {
           console.error('Pricing context failed (non-fatal):', err);
@@ -115,6 +128,7 @@ export async function POST(req: NextRequest) {
         })
       : Promise.resolve(null),
   ]);
+  console.log('Step 6 complete: similarQuotes count:', (similarQuotes as SimilarQuote[]).length);
 
   const railingLabour =
     hasRailingDims && railingCalc && masterRates
@@ -164,6 +178,7 @@ export async function POST(req: NextRequest) {
       : '';
 
   // 6. Generate quote with Claude Sonnet
+  console.log('Step 7: Calling Claude API');
   const message = await anthropic.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1024,
@@ -271,6 +286,7 @@ export async function POST(req: NextRequest) {
     })
     .eq('id', enquiryId);
 
+  console.log('Step complete: returning response');
   return NextResponse.json({
     generated_quote_id: generatedQuote.id,
     enquiry_id: enquiryId,
@@ -287,4 +303,10 @@ export async function POST(req: NextRequest) {
     ...(aiResult.components?.length ? { components: aiResult.components } : {}),
     ...(aiResult.options?.length ? { options: aiResult.options } : {}),
   });
+  } catch (error) {
+    const err = error as Error;
+    console.error('FAILED AT STEP:', err.message);
+    console.error('Stack:', err.stack);
+    return NextResponse.json({ error: err.message, stack: err.stack }, { status: 500 });
+  }
 }

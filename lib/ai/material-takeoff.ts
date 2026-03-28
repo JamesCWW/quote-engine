@@ -53,7 +53,7 @@ async function lookupMaterialRate(
   sectionSize: string
 ): Promise<number | null> {
   const { data } = await supabase
-    .from('materials')
+    .from('materials_pricing')
     .select('rate_gbp')
     .eq('tenant_id', tenantId)
     .ilike('name', `%${sectionSize}%`)
