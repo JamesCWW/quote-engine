@@ -31,6 +31,7 @@ export async function POST(req: NextRequest) {
     tone = 'friendly',
     quote_mode,
     missing_info,
+    components,
   } = body as {
     email_subject: string;
     email_body: string;
@@ -41,6 +42,7 @@ export async function POST(req: NextRequest) {
     tone?: 'formal' | 'friendly' | 'quick';
     quote_mode?: string;
     missing_info?: string[];
+    components?: Array<{ name: string; subtotal_low: number; subtotal_high: number }>;
   };
 
   if (!email_body || !price_low || !price_high) {
@@ -54,11 +56,18 @@ export async function POST(req: NextRequest) {
 
   const isQuick = tone === 'quick';
   const isRough = quote_mode === 'rough';
+  const isMixed = components && components.length > 1;
 
   const questionsList =
     missing_info && missing_info.length > 0
       ? missing_info.map((q) => `- ${q}`).join('\n')
       : '- Overall dimensions (width × height)\n- Manual or electric?\n- Installation requirements';
+
+  const componentBreakdown = isMixed
+    ? components!.map((c) =>
+        `${c.name}: £${c.subtotal_low.toLocaleString()} – £${c.subtotal_high.toLocaleString()} + VAT`
+      ).join('\n')
+    : '';
 
   const prompt = `You are writing a reply on behalf of Helions Forge, a bespoke metalwork manufacturer based in the UK. Use UK English spelling.
 
@@ -79,6 +88,17 @@ ${questionsList}
 4. Include verbatim: "We'd be happy to arrange a free site visit if that would be easier."
 5. Sign off: "Kind regards,\\nThe Helions Forge Team"
 Keep it to 3-4 short paragraphs. Questions may be listed.`
+    : isMixed
+    ? `Write a concise reply for a MIXED enquiry (multiple product types) using this structure:
+1. Brief thank you for their detailed enquiry
+2. A sentence confirming you have reviewed their requirements for ${product_type}
+3. A section headed "ESTIMATE BREAKDOWN" showing each component on a separate line:
+${componentBreakdown}
+TOTAL ESTIMATE: £${price_low.toLocaleString()} – £${price_high.toLocaleString()} + VAT
+4. A note that the gates price includes supply, posts, automation and installation. For the fencing, note that you can offer steel railings to complement the gates or timber feather edge — and ask which they would prefer if not already specified.
+5. Include verbatim: "These estimates are subject to a site survey and final specification. We would be happy to arrange a free site visit to provide a fixed quotation."
+6. Sign off: "Kind regards,\\nThe Helions Forge Team"
+Keep it professional, to 4-5 short paragraphs.`
     : `Write a concise reply that:
 - Thanks the customer briefly for their enquiry
 - Confirms what they asked about (${product_type}${material ? `, ${material}` : ''})

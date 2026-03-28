@@ -29,6 +29,21 @@ interface Accessory {
   category: string;
 }
 
+// Aluminium gate design names — any match auto-identifies material as aluminium
+const ALUMINIUM_GATE_DESIGNS = [
+  'norfolk', 'surrey', 'hertfordshire', 'essex', 'cambridgeshire',
+  'london', 'suffolk', 'northamptonshire', 'bedfordshire',
+  'buckinghamshire', 'saffron walden', 'bury st edmunds',
+  'grantchester', 'burwell', 'linton', 'finchingfield', 'clavering',
+  'sudbury', 'ely', 'oxford', 'newmarket', 'huntingdon', 'thetford',
+  'wellingborough', 'thaxted', 'halstead',
+];
+
+function detectDesignNames(text: string): string[] {
+  const lower = text.toLowerCase();
+  return ALUMINIUM_GATE_DESIGNS.filter((d) => lower.includes(d));
+}
+
 // Keyword maps to detect job type from free text
 const JOB_TYPE_KEYWORDS: { keywords: string[]; job_type_pattern: string }[] = [
   { keywords: ['sliding', 'electric', 'aluminium', 'aluminum'], job_type_pattern: 'Sliding Electric Aluminium' },
@@ -68,6 +83,16 @@ function detectJobTypePattern(text: string): string | null {
 
 function detectCategory(text: string): string | null {
   const lower = text.toLowerCase();
+
+  // Auto-detect aluminium from known design names (takes priority)
+  const designNames = detectDesignNames(text);
+  if (designNames.length > 0) {
+    if (lower.includes('pedestrian') || lower.includes('walk') || lower.includes('foot')) {
+      return 'aluminium_pedestrian_gates';
+    }
+    return 'aluminium_driveway_gates';
+  }
+
   if ((lower.includes('aluminium') || lower.includes('aluminum')) && lower.includes('driveway')) {
     return 'aluminium_driveway_gates';
   }
@@ -161,6 +186,37 @@ export interface PricingResult {
   minimumValue: number | null;
 }
 
+async function findClosestProduct(
+  supabase: ReturnType<typeof createAdminClient>,
+  tenantId: string,
+  category: string,
+  designName: string | null,
+  dimensions: { width_mm: number | null; height_mm: number | null }
+): Promise<ProductMatch | null> {
+  let query = supabase
+    .from('product_pricing')
+    .select('design_name, width_mm, height_mm, price_gbp, category')
+    .eq('tenant_id', tenantId)
+    .eq('category', category)
+    .not('price_gbp', 'is', null);
+
+  if (designName) {
+    query = query.ilike('design_name', `%${designName}%`);
+  }
+
+  const { data: products } = await query;
+  if (!products || products.length === 0) return null;
+
+  const scored = products.map((p) => {
+    let dist = 0;
+    if (dimensions.width_mm && p.width_mm) dist += Math.abs(dimensions.width_mm - p.width_mm);
+    if (dimensions.height_mm && p.height_mm) dist += Math.abs(dimensions.height_mm - p.height_mm);
+    return { product: p as ProductMatch, dist };
+  });
+  scored.sort((a, b) => a.dist - b.dist);
+  return scored[0].product;
+}
+
 export async function buildPricingContext(
   userText: string,
   tenantId: string,
@@ -169,6 +225,9 @@ export async function buildPricingContext(
   if (!userText || userText.length < 15) return { context: '', minimumValue: null };
 
   const supabase = createAdminClient();
+
+  const designNames = detectDesignNames(userText);
+  const electricMentioned = /electric|automat|motor/i.test(userText);
 
   // Fetch master rates in parallel with job/product lookups
   const [ratesRes, jobTypePattern, category, dimensions] = await Promise.all([
@@ -187,43 +246,44 @@ export async function buildPricingContext(
 
   const fabricationRate = rates.fabrication_day_rate;
   const installRate = rates.installation_day_rate;
+  const isAluminium = category?.startsWith('aluminium');
 
   const parts: string[] = [];
 
-  // Product price match
-  let productMatch: ProductMatch | null = null;
-  if (category && (dimensions.width_mm || dimensions.height_mm)) {
-    const { data: products } = await supabase
-      .from('product_pricing')
-      .select('design_name, width_mm, height_mm, price_gbp, category')
-      .eq('tenant_id', tenantId)
-      .eq('category', category)
-      .not('price_gbp', 'is', null);
+  // ── Product price lookup ──────────────────────────────────────────────────
+  // For multiple design names (alternative quote request), look up each separately
+  const lookupDesigns = designNames.length > 0 ? designNames.slice(0, 2) : [null];
+  const productMatches = await Promise.all(
+    lookupDesigns.map((d) =>
+      (category && (d || dimensions.width_mm || dimensions.height_mm))
+        ? findClosestProduct(supabase, tenantId, category, d, dimensions)
+        : Promise.resolve(null)
+    )
+  );
 
-    if (products && products.length > 0) {
-      // Find closest size match using Euclidean distance on dimensions
-      const scored = products.map((p) => {
-        let dist = 0;
-        if (dimensions.width_mm && p.width_mm) dist += Math.abs(dimensions.width_mm - p.width_mm);
-        if (dimensions.height_mm && p.height_mm) dist += Math.abs(dimensions.height_mm - p.height_mm);
-        return { product: p as ProductMatch, dist };
-      });
-      scored.sort((a, b) => a.dist - b.dist);
-      productMatch = scored[0].product;
+  if (designNames.length >= 2 && productMatches[0] && productMatches[1]) {
+    // Show as Option A / Option B for alternative quote requests
+    for (let i = 0; i < 2; i++) {
+      const pm = productMatches[i];
+      if (!pm?.price_gbp) continue;
+      const dimStr = [
+        pm.width_mm ? `${pm.width_mm}mm wide` : null,
+        pm.height_mm ? `${pm.height_mm}mm high` : null,
+      ].filter(Boolean).join(' × ');
+      parts.push(`OPTION ${i === 0 ? 'A' : 'B'} — ${pm.design_name ?? designNames[i]} gate supply: £${pm.price_gbp.toFixed(2)} (${dimStr})`);
+    }
+  } else {
+    const productMatch = productMatches[0];
+    if (productMatch?.price_gbp) {
+      const dimStr = [
+        productMatch.width_mm ? `${productMatch.width_mm}mm wide` : null,
+        productMatch.height_mm ? `${productMatch.height_mm}mm high` : null,
+      ].filter(Boolean).join(' × ');
+      parts.push(`Gate supply (${productMatch.design_name ?? 'standard'}, ${dimStr}): £${productMatch.price_gbp.toFixed(2)}`);
     }
   }
 
-  if (productMatch?.price_gbp) {
-    const dimStr = [
-      productMatch.width_mm ? `${productMatch.width_mm}mm wide` : null,
-      productMatch.height_mm ? `${productMatch.height_mm}mm high` : null,
-    ]
-      .filter(Boolean)
-      .join(' × ');
-    parts.push(`Gate product cost: £${productMatch.price_gbp.toFixed(2)} (design: ${productMatch.design_name ?? 'standard'}, ${dimStr})`);
-  }
-
-  // Job type match → installation + manufacture cost
+  // ── Job type: installation + manufacture cost ─────────────────────────────
   let jobTypeMatch: JobType | null = null;
   if (jobTypePattern) {
     const { data: jobTypes } = await supabase
@@ -247,11 +307,13 @@ export async function buildPricingContext(
       );
     }
     if (manufacture_days) {
-      const adjustedDays = manufacture_days * complexityMultiplier;
+      // Aluminium gates are pre-manufactured — do NOT apply complexity multiplier
+      const adjustedDays = isAluminium ? manufacture_days : manufacture_days * complexityMultiplier;
       const manufactureCost = adjustedDays * fabricationRate;
-      const multiplierNote = complexityMultiplier !== 1.0
-        ? ` — complexity multiplier ${complexityMultiplier}×`
-        : '';
+      const multiplierNote =
+        !isAluminium && complexityMultiplier !== 1.0
+          ? ` — complexity multiplier ${complexityMultiplier}×`
+          : '';
       parts.push(`Manufacture: £${manufactureCost.toFixed(2)} (${adjustedDays.toFixed(1)} days × £${fabricationRate}${multiplierNote})`);
     }
     if (minimum_value) {
@@ -259,27 +321,80 @@ export async function buildPricingContext(
     }
   }
 
-  // Accessories for detected category
-  const accessoryCategory = category?.includes('iron') ? 'iron_accessories' : 'aluminium_accessories';
-  const { data: accessories } = await supabase
-    .from('accessories_pricing')
-    .select('item_name, helions_price, category')
-    .eq('tenant_id', tenantId)
-    .in('category', [accessoryCategory, 'automation'])
-    .not('helions_price', 'is', null)
-    .order('category')
-    .limit(20);
+  // ── Accessories ───────────────────────────────────────────────────────────
+  if (category === 'aluminium_driveway_gates') {
+    // For aluminium driveway gates: show explicit line items (not a generic list)
+    const { data: allAcc } = await supabase
+      .from('accessories_pricing')
+      .select('item_name, helions_price, category')
+      .eq('tenant_id', tenantId)
+      .in('category', ['aluminium_accessories', 'automation'])
+      .not('helions_price', 'is', null);
 
-  if (accessories && accessories.length > 0) {
-    const accessoryList = (accessories as Accessory[])
-      .map((a) => `${a.item_name} £${a.helions_price?.toFixed(2)}`)
-      .join(', ');
-    parts.push(`Likely accessories: ${accessoryList}`);
+    const acc = (allAcc ?? []) as Accessory[];
+    const find = (pattern: RegExp) => acc.find((a) => pattern.test(a.item_name));
+
+    const largePost = find(/driveway.*post.*large|large.*post.*driveway/i);
+    const fob = find(/remote.*fob|fob/i);
+    const postPrice = largePost?.helions_price ?? 181.89;
+    const fobPrice = fob?.helions_price ?? 28.56;
+
+    parts.push(`\nALUMINIUM GATE LINE ITEMS — include each as an explicit line in cost breakdown:`);
+    parts.push(`  Posts × 2: £${(postPrice * 2).toFixed(2)} (£${postPrice.toFixed(2)} each — Driveway Gate Post Large)`);
+    parts.push(`  Remote fobs × 2: £${(fobPrice * 2).toFixed(2)} (£${fobPrice.toFixed(2)} each)`);
+
+    if (electricMentioned) {
+      const frogKit = find(/frog.?x|frog.*2.?leaf|2.?leaf.*kit/i);
+      const photocell = find(/photocell|dir\b/i);
+      const removeFeet = find(/remove.*feet|feet.*motor|underground.*feet/i);
+      const shoes = find(/underground.*shoes|shoes.*underground/i);
+
+      parts.push(`  FROG-X 2-leaf automation kit: £${(frogKit?.helions_price ?? 1364.30).toFixed(2)}`);
+      if (photocell) parts.push(`  DIR Photocells: £${photocell.helions_price!.toFixed(2)}`);
+      if (removeFeet) parts.push(`  Remove Feet for Underground Motors: £${removeFeet.helions_price!.toFixed(2)}`);
+      if (shoes) parts.push(`  Pair of Underground Shoes: £${shoes.helions_price!.toFixed(2)}`);
+      parts.push(`  Consumer unit connection: £${rates.consumer_unit_connection.toFixed(2)}`);
+    }
+  } else {
+    // Generic accessories for iron or other categories
+    const accessoryCategory = category?.includes('iron') ? 'iron_accessories' : 'aluminium_accessories';
+    const { data: accessories } = await supabase
+      .from('accessories_pricing')
+      .select('item_name, helions_price, category')
+      .eq('tenant_id', tenantId)
+      .in('category', [accessoryCategory, 'automation'])
+      .not('helions_price', 'is', null)
+      .order('category')
+      .limit(20);
+
+    if (accessories && accessories.length > 0) {
+      const accessoryList = (accessories as Accessory[])
+        .map((a) => `${a.item_name} £${a.helions_price?.toFixed(2)}`)
+        .join(', ');
+      parts.push(`Likely accessories: ${accessoryList}`);
+    }
+
+    if (electricMentioned && rates.consumer_unit_connection) {
+      parts.push(`Note: Always add automation equipment costs separately if electric gates requested. Consumer unit connection: £${rates.consumer_unit_connection.toFixed(2)}`);
+    }
   }
 
-  const electricMentioned = /electric|automat|motor/i.test(userText);
-  if (electricMentioned && rates.consumer_unit_connection) {
-    parts.push(`Note: Always add automation equipment costs separately if electric gates requested. Consumer unit connection: £${rates.consumer_unit_connection.toFixed(2)}`);
+  // ── Mixed enquiry: gates + fencing/railings ───────────────────────────────
+  const hasFencing = /\b(railing|railings|fence|fencing|featherboard|feather.?edge|close.?board|panel)\b/i.test(userText);
+  const hasGates = /\b(gate|gates)\b/i.test(userText);
+  if (hasGates && hasFencing) {
+    const lengthMatch = userText.match(/(\d+(?:\.\d+)?)\s*(?:linear\s*)?(?:m\b|metres?|meters?)/i);
+    const fencingLength = lengthMatch ? parseFloat(lengthMatch[1]) : null;
+
+    parts.push(`\nFENCING/RAILINGS COMPONENT${fencingLength ? ` (${fencingLength}m)` : ' (length unknown — ask customer)'}:`);
+    if (fencingLength) {
+      parts.push(`  Steel railings to match gates: £${(fencingLength * 180).toFixed(0)}–£${(fencingLength * 280).toFixed(0)} (£180–£280/m installed)`);
+      parts.push(`  Timber feather edge: £${(fencingLength * 80).toFixed(0)}–£${(fencingLength * 120).toFixed(0)} (£80–£120/m installed)`);
+    } else {
+      parts.push(`  Steel railings to match gates: £180–£280/m installed`);
+      parts.push(`  Timber feather edge: £80–£120/m installed`);
+    }
+    parts.push(`  CLARIFYING QUESTION: "For the fencing sections we can supply mild steel railings to complement the gates, or timber close board fencing. Which would you prefer?"`);
   }
 
   const minimumValue = jobTypeMatch?.minimum_value ?? null;

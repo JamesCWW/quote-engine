@@ -45,6 +45,133 @@ const STATUS_STYLES: Record<string, string> = {
   sent: 'bg-blue-100 text-blue-700',
 };
 
+const SECTION_LABELS: Record<string, string> = {
+  gates: 'Gates',
+  fencing: 'Fencing / Railings',
+};
+
+function AssumptionInput({
+  a,
+  idx,
+  onValueChange,
+  onIncludeChange,
+}: {
+  a: AssumptionState;
+  idx: number;
+  onValueChange: (idx: number, val: string) => void;
+  onIncludeChange: (idx: number, include: boolean) => void;
+}) {
+  return (
+    <div className="flex items-start gap-3">
+      <input
+        type="checkbox"
+        id={`include-${a.question.id}`}
+        checked={a.include}
+        onChange={(e) => onIncludeChange(idx, e.target.checked)}
+        className="mt-2.5 h-3.5 w-3.5 rounded border-gray-300 text-gray-900 cursor-pointer"
+      />
+      <div className="flex-1 min-w-0">
+        <label
+          htmlFor={`input-${a.question.id}`}
+          className={`block text-xs font-medium mb-1 ${a.include ? 'text-gray-700' : 'text-gray-400'}`}
+        >
+          {a.question.label}
+        </label>
+
+        {a.question.type === 'dropdown' && a.question.options ? (
+          <select
+            id={`input-${a.question.id}`}
+            value={a.value}
+            onChange={(e) => onValueChange(idx, e.target.value)}
+            disabled={!a.include}
+            className="w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <option value="">Select…</option>
+            {a.question.options.map((opt) => (
+              <option key={opt} value={opt}>{opt}</option>
+            ))}
+          </select>
+        ) : a.question.type === 'yesno' ? (
+          <div className="flex gap-2">
+            {['Yes', 'No'].map((opt) => (
+              <button
+                key={opt}
+                type="button"
+                onClick={() => onValueChange(idx, opt)}
+                disabled={!a.include}
+                className={`px-3 py-1.5 text-xs rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                  a.value === opt
+                    ? 'bg-gray-900 text-white border-gray-900'
+                    : 'border-gray-300 text-gray-600 hover:bg-gray-50'
+                }`}
+              >
+                {opt}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <input
+            id={`input-${a.question.id}`}
+            type="text"
+            value={a.value}
+            onChange={(e) => onValueChange(idx, e.target.value)}
+            disabled={!a.include}
+            placeholder="Enter value…"
+            className="w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function AssumptionsList({
+  assumptions,
+  onValueChange,
+  onIncludeChange,
+}: {
+  assumptions: AssumptionState[];
+  onValueChange: (idx: number, val: string) => void;
+  onIncludeChange: (idx: number, include: boolean) => void;
+}) {
+  const hasSections = assumptions.some((a) => a.question.section);
+
+  if (!hasSections) {
+    return (
+      <div className="space-y-3">
+        {assumptions.map((a, idx) => (
+          <AssumptionInput key={a.question.id} a={a} idx={idx} onValueChange={onValueChange} onIncludeChange={onIncludeChange} />
+        ))}
+      </div>
+    );
+  }
+
+  // Group by section for mixed enquiries
+  const sections = new Map<string, { a: AssumptionState; idx: number }[]>();
+  assumptions.forEach((a, idx) => {
+    const key = a.question.section ?? 'general';
+    if (!sections.has(key)) sections.set(key, []);
+    sections.get(key)!.push({ a, idx });
+  });
+
+  return (
+    <div className="space-y-5">
+      {Array.from(sections.entries()).map(([sectionKey, items]) => (
+        <div key={sectionKey}>
+          <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2 border-b border-gray-100 pb-1">
+            {SECTION_LABELS[sectionKey] ?? sectionKey}
+          </p>
+          <div className="space-y-3">
+            {items.map(({ a, idx }) => (
+              <AssumptionInput key={a.question.id} a={a} idx={idx} onValueChange={onValueChange} onIncludeChange={onIncludeChange} />
+            ))}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function EnquiryDetailClient({
   enquiryId,
   rawInput,
@@ -76,7 +203,7 @@ export default function EnquiryDetailClient({
       setAssumptions(
         questions.map((q) => ({
           question: q,
-          value: q.type === 'dropdown' && q.options?.[0] ? q.options[0] : '',
+          value: q.defaultValue ?? (q.type === 'dropdown' && q.options?.[0] ? q.options[0] : ''),
           include: true,
         }))
       );
@@ -222,68 +349,11 @@ export default function EnquiryDetailClient({
               <p className="text-xs text-gray-500">
                 Fill in any known details before generating. Uncheck items to exclude them.
               </p>
-              {assumptions.map((a, idx) => (
-                <div key={a.question.id} className="flex items-start gap-3">
-                  <input
-                    type="checkbox"
-                    id={`include-${a.question.id}`}
-                    checked={a.include}
-                    onChange={(e) => setAssumptionInclude(idx, e.target.checked)}
-                    className="mt-2.5 h-3.5 w-3.5 rounded border-gray-300 text-gray-900 cursor-pointer"
-                  />
-                  <div className="flex-1 min-w-0">
-                    <label
-                      htmlFor={`input-${a.question.id}`}
-                      className={`block text-xs font-medium mb-1 ${a.include ? 'text-gray-700' : 'text-gray-400'}`}
-                    >
-                      {a.question.label}
-                    </label>
-
-                    {a.question.type === 'dropdown' && a.question.options ? (
-                      <select
-                        id={`input-${a.question.id}`}
-                        value={a.value}
-                        onChange={(e) => setAssumptionValue(idx, e.target.value)}
-                        disabled={!a.include}
-                        className="w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
-                      >
-                        <option value="">Select…</option>
-                        {a.question.options.map((opt) => (
-                          <option key={opt} value={opt}>{opt}</option>
-                        ))}
-                      </select>
-                    ) : a.question.type === 'yesno' ? (
-                      <div className="flex gap-2">
-                        {['Yes', 'No'].map((opt) => (
-                          <button
-                            key={opt}
-                            type="button"
-                            onClick={() => setAssumptionValue(idx, opt)}
-                            disabled={!a.include}
-                            className={`px-3 py-1.5 text-xs rounded-md border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                              a.value === opt
-                                ? 'bg-gray-900 text-white border-gray-900'
-                                : 'border-gray-300 text-gray-600 hover:bg-gray-50'
-                            }`}
-                          >
-                            {opt}
-                          </button>
-                        ))}
-                      </div>
-                    ) : (
-                      <input
-                        id={`input-${a.question.id}`}
-                        type="text"
-                        value={a.value}
-                        onChange={(e) => setAssumptionValue(idx, e.target.value)}
-                        disabled={!a.include}
-                        placeholder="Enter value…"
-                        className="w-full border border-gray-300 rounded-md px-2.5 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 disabled:opacity-40 disabled:cursor-not-allowed"
-                      />
-                    )}
-                  </div>
-                </div>
-              ))}
+              <AssumptionsList
+                assumptions={assumptions}
+                onValueChange={setAssumptionValue}
+                onIncludeChange={setAssumptionInclude}
+              />
             </div>
           )}
 

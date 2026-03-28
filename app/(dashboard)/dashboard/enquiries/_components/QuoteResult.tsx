@@ -26,6 +26,19 @@ export interface CostBreakdown {
   contingency: number;
 }
 
+export interface QuoteComponent {
+  name: string;
+  items: Array<{ label: string; amount: number; note?: string }>;
+  subtotal_low: number;
+  subtotal_high: number;
+}
+
+export interface QuoteOption {
+  name: string;
+  price_low: number;
+  price_high: number;
+}
+
 export interface QuoteResultData {
   generated_quote_id: string;
   enquiry_id: string;
@@ -39,6 +52,8 @@ export interface QuoteResultData {
   similar_quotes: SimilarQuote[];
   quote_mode?: 'rough' | 'precise';
   cost_breakdown?: CostBreakdown;
+  components?: QuoteComponent[];
+  options?: QuoteOption[];
 }
 
 interface Props {
@@ -121,6 +136,74 @@ function BreakdownRow({
         {note && <span className="text-gray-400 ml-1">({note})</span>}
       </span>
       <span>{fmt(value)}</span>
+    </div>
+  );
+}
+
+function ComponentBreakdownPanel({ components, priceLow, priceHigh }: {
+  components: QuoteComponent[];
+  priceLow: number;
+  priceHigh: number;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mt-4 rounded-md border border-gray-200 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+      >
+        <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+          Component Breakdown
+        </span>
+        <span className="text-gray-400 text-sm">{open ? '▲' : '▼'}</span>
+      </button>
+      {open && (
+        <div className="px-4 py-3 bg-white font-mono text-xs text-gray-700 space-y-4">
+          {components.map((comp, i) => (
+            <div key={i}>
+              <p className="font-semibold text-gray-800 mb-1">{comp.name}</p>
+              {comp.items.map((item, j) => (
+                <div key={j} className="flex justify-between gap-4">
+                  <span className="text-gray-500">
+                    {item.label}
+                    {item.note && <span className="text-gray-400 ml-1">({item.note})</span>}
+                  </span>
+                  <span>{fmt(item.amount)}</span>
+                </div>
+              ))}
+              <div className="border-t border-gray-100 pt-1 mt-1 flex justify-between font-semibold">
+                <span>Subtotal</span>
+                <span>{fmt(comp.subtotal_low)}{comp.subtotal_high !== comp.subtotal_low ? ` – ${fmt(comp.subtotal_high)}` : ''}</span>
+              </div>
+            </div>
+          ))}
+          <div className="border-t border-gray-200 pt-2 flex justify-between font-semibold text-gray-900">
+            <span>TOTAL ESTIMATE</span>
+            <span>{fmt(priceLow)} – {fmt(priceHigh)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AlternativeOptionsPanel({ options }: { options: QuoteOption[] }) {
+  return (
+    <div className="mt-4 rounded-md border border-blue-100 bg-blue-50 overflow-hidden">
+      <div className="px-4 py-2.5 bg-blue-100">
+        <span className="text-xs font-semibold text-blue-700 uppercase tracking-wide">
+          Alternative Options
+        </span>
+      </div>
+      <div className="px-4 py-3 space-y-2">
+        {options.map((opt, i) => (
+          <div key={i} className="flex items-center justify-between text-sm">
+            <span className="text-gray-700 font-medium">{opt.name}</span>
+            <span className="text-gray-900 font-semibold">{fmt(opt.price_low)} – {fmt(opt.price_high)}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -254,8 +337,14 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset, on
           </div>
         )}
 
-        {result.cost_breakdown && (
+        {result.components && result.components.length > 0 && (
+          <ComponentBreakdownPanel components={result.components} priceLow={result.price_low} priceHigh={result.price_high} />
+        )}
+        {result.cost_breakdown && !result.components && (
           <CostBreakdownPanel breakdown={result.cost_breakdown} priceLow={result.price_low} priceHigh={result.price_high} />
+        )}
+        {result.options && result.options.length > 0 && (
+          <AlternativeOptionsPanel options={result.options} />
         )}
       </div>
 

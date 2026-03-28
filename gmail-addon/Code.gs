@@ -325,6 +325,11 @@ function onGenerateEstimate(event) {
     cacheSet_('threadCount',  threadCount);
     cache_().remove('assumptions');
     cache_().remove('suggestedComplexity');
+    if (q.job_components && q.job_components.length > 0) {
+      cacheSet_('jobComponents', q.job_components);
+    } else {
+      cache_().remove('jobComponents');
+    }
 
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation()
@@ -363,7 +368,54 @@ function onRecalculate(event) {
   var assumptions = [];
   var railingDims = null;
 
-  if (productType === 'railings') {
+  // Mixed job: check for job_components in cache
+  var cachedJobComponents = q.job_components || cacheGet_('jobComponents') || [];
+  var isMixedJob = cachedJobComponents.length > 1 || f.mixed_job === 'true';
+
+  if (isMixedJob) {
+    // ── MIXED: gates + fencing/railings ─────────────────────────────────────
+    var gateDesign     = f.gate_design       || '';
+    var gateWidthMm    = f.gate_width_mm     || '';
+    var gateHeightMm   = f.gate_height_mm    || '';
+    var gateMaterial   = f.gate_material     || 'Aluminium';
+    var gateTypeM      = f.gate_type         || 'electric';
+    var motorTypeM     = f.motor_type        || 'none';
+    var accessCtrlM    = f.access_control    || 'none';
+    var postsRequired  = f.posts_required    || 'yes';
+    var powerAvailM    = f.power_available   || 'yes';
+    var gateFinish     = f.gate_finish       || '';
+
+    var fenceLengthM   = parseFloat(f.fence_total_length_m || '0');
+    var fenceType      = f.fence_type        || 'Steel railings to match gates';
+    var fenceHeightM   = f.fence_height_m    || '';
+    var fenceEndPosts  = f.fence_end_posts   || 'yes';
+    var fenceMidPosts  = f.fence_mid_posts   || 'yes';
+    var fenceFixing    = f.fence_fixing_method || '';
+    var fenceFinish    = f.fence_finish      || '';
+
+    assumptions = [
+      { label: 'COMPONENT 1 — Gates',      value: '' },
+      { label: 'Gate design',              value: gateDesign },
+      { label: 'Gate width (mm)',          value: gateWidthMm },
+      { label: 'Gate height (mm)',         value: gateHeightMm },
+      { label: 'Gate material',            value: gateMaterial },
+      { label: 'Automation',              value: gateTypeM === 'electric' ? 'Electric' : 'Manual' },
+      { label: 'Motor type',               value: motorLabel_(motorTypeM) },
+      { label: 'Access control',           value: accessLabel_(accessCtrlM) },
+      { label: 'Posts required',           value: postsRequired === 'yes' ? 'Yes' : 'No' },
+      { label: 'Power on site',           value: powerAvailM === 'yes' ? 'Yes' : 'No – needs consumer unit connection' },
+      { label: 'Gate finish',              value: gateFinish },
+      { label: 'COMPONENT 2 — Fencing',   value: '' },
+      { label: 'Fencing total length (m)', value: fenceLengthM > 0 ? String(fenceLengthM) : '' },
+      { label: 'Fencing type',             value: fenceType },
+      { label: 'Fencing height (m)',       value: fenceHeightM },
+      { label: 'End posts required',       value: fenceEndPosts === 'yes' ? 'Yes' : 'No' },
+      { label: 'Mid-span posts required',  value: fenceMidPosts === 'yes' ? 'Yes' : 'No' },
+      { label: 'Fence fixing method',      value: fenceFixing },
+      { label: 'Fence finish',             value: fenceFinish },
+    ].filter(function(a) { return a.value; });
+
+  } else if (productType === 'railings') {
     var totalLength    = parseFloat(f.total_length_m          || '0');
     var height         = parseFloat(f.height_m                || '1.0');
     var postSpacing    = parseFloat(f.post_spacing_m          || '2.5');
@@ -617,6 +669,7 @@ function onInsertReply(event) {
       tone:          tone,
       quote_mode:    q.quote_mode || 'precise',
       missing_info:  q.missing_info || [],
+      components:    (q.components && q.components.length > 1) ? q.components : [],
     });
 
     if (result.code !== 200) {
@@ -726,8 +779,54 @@ function buildResultCard_(q, threadCount, messageId) {
     );
   }
 
+  // ── Component breakdown (mixed jobs: gates + fencing) ───────────────────
+  if (q.components && q.components.length > 1) {
+    var compSection = CardService.newCardSection()
+      .setHeader('📋 Component Breakdown')
+      .setCollapsible(true)
+      .setNumUncollapsibleWidgets(2);
+
+    q.components.forEach(function(comp) {
+      var icon = /gate|door/i.test(comp.name) ? '🚪' : '🔧';
+      compSection.addWidget(
+        CardService.newKeyValue()
+          .setTopLabel(icon + ' ' + comp.name)
+          .setContent('£' + fmt_(comp.subtotal_low) + ' – £' + fmt_(comp.subtotal_high))
+      );
+      if (comp.items && comp.items.length > 0) {
+        var itemLines = comp.items.map(function(item) {
+          return '  ' + item.label + ': £' + fmt_(item.amount) + (item.note ? ' (' + item.note + ')' : '');
+        }).join('\n');
+        compSection.addWidget(CardService.newTextParagraph().setText(itemLines));
+      }
+    });
+    compSection.addWidget(
+      CardService.newDivider()
+    );
+    compSection.addWidget(
+      CardService.newKeyValue()
+        .setTopLabel('TOTAL ESTIMATE')
+        .setContent('£' + fmt_(q.price_low) + ' – £' + fmt_(q.price_high) + ' + VAT')
+    );
+    card.addSection(compSection);
+  }
+
+  // ── Alternative options (side-by-side model quotes) ──────────────────────
+  if (q.options && q.options.length > 1) {
+    var optSection = CardService.newCardSection()
+      .setHeader('🔀 Alternative Options');
+    q.options.forEach(function(opt) {
+      optSection.addWidget(
+        CardService.newKeyValue()
+          .setTopLabel(opt.name)
+          .setContent('£' + fmt_(opt.price_low) + ' – £' + fmt_(opt.price_high) + ' + VAT')
+      );
+    });
+    card.addSection(optSection);
+  }
+
   // ── Cost breakdown (collapsible — precise railing estimates only) ─────────
-  if (q.cost_breakdown) {
+  if (q.cost_breakdown && !(q.components && q.components.length > 1)) {
     var cb = q.cost_breakdown;
     var lines = [
       'Materials:    £' + fmt_(cb.material_cost),
@@ -832,6 +931,11 @@ function buildResultCard_(q, threadCount, messageId) {
  * Assumptions form panel — dispatches to product-type-specific builder.
  */
 function buildAssumptionsCard_(existingResult, suggestedComplexity) {
+  // Mixed job: has multiple job_components (e.g. gates + railings)
+  var jobComponents = existingResult.job_components || cacheGet_('jobComponents') || [];
+  if (jobComponents.length > 1) {
+    return buildMixedAssumptionsCard_(existingResult, jobComponents, suggestedComplexity);
+  }
   var productType = detectProductType_(existingResult.product_type);
   if (productType === 'railings')        return buildRailingsAssumptionsCard_(existingResult);
   if (productType === 'pedestrian_gates') return buildPedestrianGatesAssumptionsCard_(existingResult);
@@ -1205,6 +1309,189 @@ function buildGatesAssumptionsCard_(existingResult, suggestedComplexity) {
           .setMultiline(true)
       )
   );
+
+  return addFormActions_(card).build();
+}
+
+// ── MIXED JOB assumptions card (gates + fencing/railings) ──────────────────
+function buildMixedAssumptionsCard_(existingResult, jobComponents, suggestedComplexity) {
+  var gateComp   = null;
+  var railComp   = null;
+  for (var i = 0; i < jobComponents.length; i++) {
+    if (jobComponents[i].component === 'gates')    gateComp  = jobComponents[i];
+    if (jobComponents[i].component === 'railings') railComp  = jobComponents[i];
+  }
+  gateComp  = gateComp  || {};
+  railComp  = railComp  || {};
+
+  var isElectric = (gateComp.automation === 'electric') ||
+                   ((gateComp.product_type || '').toLowerCase().includes('electric'));
+
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Mixed Job — Confirm Details'));
+
+  // Hidden marker so onRecalculate knows this is a mixed job
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName('mixed_job')
+          .setTitle('Job type')
+          .addItem('Gates + Fencing / Railings', 'true', true)
+      )
+  );
+
+  // ── SECTION 1: GATES ─────────────────────────────────────────────────────
+  var gateSection = CardService.newCardSection().setHeader('🚪 SECTION 1 — GATES');
+
+  gateSection.addWidget(
+    CardService.newTextInput()
+      .setFieldName('gate_design')
+      .setTitle('Design (e.g. Norfolk, Surrey, Hertfordshire)')
+      .setValue(gateComp.design || '')
+  );
+  gateSection.addWidget(
+    CardService.newTextInput()
+      .setFieldName('gate_width_mm')
+      .setTitle('Width (mm)')
+      .setHint('e.g. 3600')
+      .setValue(gateComp.width_mm ? String(gateComp.width_mm) : '')
+  );
+  gateSection.addWidget(
+    CardService.newTextInput()
+      .setFieldName('gate_height_mm')
+      .setTitle('Height (mm)')
+      .setHint('e.g. 1800')
+      .setValue(gateComp.height_mm ? String(gateComp.height_mm) : '')
+  );
+  gateSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('gate_material')
+      .setTitle('Material')
+      .addItem('Aluminium',  'Aluminium',  true)
+      .addItem('Mild Steel', 'Mild Steel', false)
+  );
+  gateSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('gate_type')
+      .setTitle('Automation')
+      .addItem('Electric automated', 'electric', isElectric)
+      .addItem('Manual',             'manual',   !isElectric)
+  );
+  gateSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('motor_type')
+      .setTitle('Motor type (if electric)')
+      .addItem('Underground FROG-X',    'frog_x', isElectric)
+      .addItem('Articulated arm FTX-P', 'ftx_p',  false)
+      .addItem('Sliding BXV',           'bxv',    false)
+      .addItem('N/A',                   'none',   !isElectric)
+  );
+  gateSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('access_control')
+      .setTitle('Access control')
+      .addItem('Remote fobs only',   'fobs',      false)
+      .addItem('Keypad',             'keypad',    false)
+      .addItem('GSM audio intercom', 'gsm_audio', false)
+      .addItem('Video intercom',     'video',     false)
+      .addItem('None',               'none',      true)
+  );
+  gateSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('posts_required')
+      .setTitle('New posts required?')
+      .addItem('Yes', 'yes', true)
+      .addItem('No — using existing posts', 'no', false)
+  );
+  gateSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('power_available')
+      .setTitle('Power available on site?')
+      .addItem('Yes',                                 'yes', true)
+      .addItem('No – needs consumer unit connection', 'no',  false)
+  );
+  gateSection.addWidget(
+    CardService.newTextInput()
+      .setFieldName('gate_finish')
+      .setTitle('Finish / colour')
+      .setHint('e.g. RAL 9005 Matt Black, Anthracite')
+  );
+  card.addSection(gateSection);
+
+  // ── SECTION 2: FENCING / RAILINGS ────────────────────────────────────────
+  var fenceSection = CardService.newCardSection().setHeader('🔧 SECTION 2 — FENCING / RAILINGS');
+
+  // Show any auto-detected sections
+  var detectedSections = railComp.sections || [];
+  if (detectedSections.length > 0) {
+    var totalDetected = detectedSections.reduce(function(s, sec) { return s + sec.length_m; }, 0);
+    var sectionText = detectedSections.map(function(sec, idx) {
+      return (idx + 1) + '. ' + sec.label + ': ' + sec.length_m + 'm ✓';
+    }).join('\n') + '\nTotal: ' + totalDetected.toFixed(1) + 'm';
+    fenceSection.addWidget(
+      CardService.newTextParagraph().setText('Detected sections:\n' + sectionText)
+    );
+  }
+
+  fenceSection.addWidget(
+    CardService.newTextInput()
+      .setFieldName('fence_total_length_m')
+      .setTitle('Total fencing length (metres)')
+      .setHint('e.g. 11.7')
+      .setValue(railComp.total_length_m ? String(railComp.total_length_m) : '')
+  );
+  fenceSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('fence_type')
+      .setTitle('Fencing type')
+      .addItem('Steel railings to match gates',      'Steel railings to match gates',      true)
+      .addItem('Timber feather edge / close board',  'Timber feather edge / close board',  false)
+      .addItem('Aluminium railings',                 'Aluminium railings',                 false)
+      .addItem('Decorative iron railings',           'Decorative iron railings',           false)
+  );
+  fenceSection.addWidget(
+    CardService.newTextInput()
+      .setFieldName('fence_height_m')
+      .setTitle('Height (metres)')
+      .setHint('e.g. 1.8')
+  );
+  fenceSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('fence_end_posts')
+      .setTitle('Posts at each end of run?')
+      .addItem('Yes', 'yes', true)
+      .addItem('No',  'no',  false)
+  );
+  fenceSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('fence_mid_posts')
+      .setTitle('Mid-span posts required?')
+      .addItem('Yes — every 2.5m',    'yes',   true)
+      .addItem('No — wall top / span', 'no',    false)
+  );
+  fenceSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('fence_fixing_method')
+      .setTitle('Fixing method')
+      .addItem('Core drilled into ground', 'Core drilled into ground', true)
+      .addItem('Bolt down plate',          'Bolt down plate',          false)
+      .addItem('Wall mounted',             'Wall mounted',             false)
+      .addItem('Welded to existing',       'Welded to existing',       false)
+  );
+  addFinishDropdown_(fenceSection);
+  card.addSection(fenceSection);
 
   return addFormActions_(card).build();
 }

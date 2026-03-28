@@ -10,6 +10,8 @@ export interface AnalysisQuestion {
   label: string;
   type: 'text' | 'dropdown' | 'yesno';
   options?: string[];
+  section?: string; // e.g. 'gates' | 'fencing' — set when enquiry has multiple components
+  defaultValue?: string; // pre-filled value auto-detected from the enquiry
 }
 
 const ANALYSE_PROMPT = `You are a quoting assistant for Helions Forge, a bespoke metalwork manufacturer (gates, railings, balustrades).
@@ -18,13 +20,39 @@ Given the enquiry text and any extracted specs below, identify the key informati
 
 Return ONLY a JSON array of questions. Do not ask about anything that is already clearly stated in the enquiry or specs.
 
+ALUMINIUM GATE DESIGN DETECTION:
+If the enquiry mentions any of these design names, automatically set material = Aluminium and do NOT ask about material:
+Norfolk, Surrey, Hertfordshire, Essex, Cambridgeshire, London, Suffolk, Northamptonshire,
+Bedfordshire, Buckinghamshire, Saffron Walden, Bury St Edmunds, Grantchester, Burwell,
+Linton, Finchingfield, Clavering, Sudbury, Ely, Oxford, Newmarket, Huntingdon, Thetford,
+Wellingborough, Thaxted, Halstead
+
+MIXED ENQUIRY DETECTION:
+If the enquiry mentions BOTH gates AND fencing/railings, tag each question with a "section" field:
+- "section": "gates" for gate-related questions
+- "section": "fencing" for fencing/railing questions
+
+For mixed enquiries, include:
+GATES section (if missing):
+- Motor type (if electric): dropdown ["FROG-X Underground", "BFT/Nice Swing Motor", "Sliding Motor", "Not sure"]
+- Access control: dropdown ["Keypad only", "Video intercom", "GSM intercom", "Remote fobs only", "None"]
+- Posts required: yesno
+
+FENCING section (if missing):
+- Fencing type: dropdown ["Steel railings to match gates", "Timber feather edge / close board", "Unsure — need recommendation"]
+- Total fencing length (metres): text
+- Fencing height (metres): text
+- Posts included: yesno
+
 Each question object must have:
 - "id": camelCase identifier (e.g. "installationType")
 - "label": Clear, friendly question for the estimator to fill in
 - "type": one of "text", "dropdown", or "yesno"
 - "options": array of strings — REQUIRED if type is "dropdown"
+- "section": "gates" | "fencing" — REQUIRED if mixed enquiry, omit otherwise
+- "defaultValue": string — set this if the answer can be auto-detected from the enquiry text
 
-Common gaps to check for (only include if genuinely missing):
+Common gates gaps to check for (only include if genuinely missing):
 - Manual or electric gates/automation?
 - Installation method: brick to brick or concrete posts?
 - Any specific design or style preference?
@@ -35,7 +63,7 @@ Common gaps to check for (only include if genuinely missing):
 - Number of panels or gates?
 - Specific dimensions (length, height, width) if not mentioned?
 
-Return a maximum of 6 of the most important missing questions.
+Return a maximum of 8 of the most important missing questions (can be split across sections for mixed enquiries).
 Return ONLY valid JSON array, no surrounding text.`;
 
 export async function POST(

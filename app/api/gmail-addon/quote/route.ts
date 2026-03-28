@@ -166,6 +166,20 @@ export async function POST(req: NextRequest) {
     material: string;
     finishing_cost?: number;
     cost_breakdown?: CostBreakdown;
+    components?: Array<{ name: string; items: Array<{ label: string; amount: number; note?: string }>; subtotal_low: number; subtotal_high: number }>;
+    options?: Array<{ name: string; price_low: number; price_high: number }>;
+    job_components?: Array<{
+      component: 'gates' | 'railings';
+      product_type?: string;
+      design?: string | null;
+      width_mm?: number | null;
+      height_mm?: number | null;
+      quantity?: number;
+      automation?: 'electric' | 'manual';
+      total_length_m?: number | null;
+      sections?: Array<{ label: string; length_m: number }>;
+      style?: string;
+    }>;
   };
 
   try {
@@ -222,5 +236,8 @@ export async function POST(req: NextRequest) {
     similar_quote_ids: (similarQuotes as SimilarQuote[]).map((q) => q.id),
     quote_mode: quoteMode,
     ...(costBreakdown ? { cost_breakdown: costBreakdown } : {}),
+    ...(aiResult.components?.length ? { components: aiResult.components } : {}),
+    ...(aiResult.options?.length ? { options: aiResult.options } : {}),
+    ...(aiResult.job_components?.length ? { job_components: aiResult.job_components } : {}),
   });
 }

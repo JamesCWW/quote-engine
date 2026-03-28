@@ -190,6 +190,8 @@ export async function POST(req: NextRequest) {
     material: string;
     finishing_cost?: number;
     cost_breakdown?: CostBreakdown;
+    components?: Array<{ name: string; items: Array<{ label: string; amount: number; note?: string }>; subtotal_low: number; subtotal_high: number }>;
+    options?: Array<{ name: string; price_low: number; price_high: number }>;
   };
 
   try {
@@ -282,5 +284,7 @@ export async function POST(req: NextRequest) {
     similar_quotes: similarQuotes,
     quote_mode: quoteMode,
     ...(costBreakdown ? { cost_breakdown: costBreakdown } : {}),
+    ...(aiResult.components?.length ? { components: aiResult.components } : {}),
+    ...(aiResult.options?.length ? { options: aiResult.options } : {}),
   });
 }
