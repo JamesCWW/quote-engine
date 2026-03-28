@@ -132,52 +132,7 @@ CREATE POLICY "tenant_isolation" ON quotes
 
 ## Phase 4 — Completed
 
-
 ## Phase 5 — Completed
-
-**Goal:** Customer-facing AI quote assistant embeddable on the Helions Forge website.
-
-### Tasks
-
-- [ ] **5.1** Create `/api/chat/route.ts` — streaming chat endpoint:
-  - Uses Vercel AI SDK `streamText`
-  - System prompt is a "safe public" version — gives ranges only, no cost breakdowns
-  - Has access to same RAG search but filtered to golden quotes only
-  - Hard limit: never quote below £X minimum (configurable per tenant)
-
-- [ ] **5.2** Chatbot conversation flow (system prompt stages):
-  ```
-  Stage 1: Greet + ask product type
-  Stage 2: Ask internal/external, dimensions
-  Stage 3: Ask material preference / budget range
-  Stage 4: Ask for photo (optional)
-  Stage 5: Generate and present range estimate
-  Stage 6: Offer to "send to our team for a formal quote" → capture email
-  ```
-
-- [ ] **5.3** Build embeddable chat widget (`/widget/[tenantId]`):
-  - Minimal React component, iframe-embeddable
-  - Mobile-friendly floating button
-  - Collects: job description, photo upload, contact email at end
-  - Saves full conversation to `enquiries` table with `source: 'chatbot'`
-
-- [ ] **5.4** Human handoff trigger:
-  - If user mentions keywords: "structural", "large scale", "50 metres+", "commercial"
-  - Bot responds: "This sounds like a specialist project — I've flagged this for our team to call you directly."
-  - Creates high-priority enquiry in dashboard
-
-- [ ] **5.5** Dashboard notification for new chatbot leads:
-  - Supabase Realtime subscription on `enquiries` table
-  - Toast notification in dashboard when new chatbot enquiry arrives
-
-- [ ] **5.6** Market fluctuation buffer:
-  - Config value per tenant: `price_buffer_percent` (default: 10%)
-  - All chatbot-generated ranges are automatically padded by this %
-  - Disclaimer shown: "Estimates may vary subject to current material costs"
-
-**Test checkpoint:** Embed widget on a test page, complete a full conversation, verify lead appears in dashboard with specs extracted.
-
----
 
 ## Phase 6 — Multi-Tenant SaaS (White Label Template)
 
@@ -231,17 +186,17 @@ CREATE POLICY "tenant_isolation" ON quotes
 
 ---
 
-## Phase 7 — Completed
+## Phase 7 — Email Inbound Pipeline (Automation)
 
 **Goal:** Automate ingestion — emails sent to a quotes inbox auto-appear in dashboard.
 
 ### Tasks
 
-- [x] **7.1** Set up Resend inbound email:
+- [ ] **7.1** Set up Resend inbound email:
   - Configure `quotes@helionsforge.com` inbound webhook
   - Points to Supabase Edge Function URL
 
-- [x] **7.2** Supabase Edge Function `functions/process-email/index.ts`:
+- [ ] **7.2** Supabase Edge Function `functions/process-email/index.ts`:
   - Receives Resend webhook payload
   - Extracts email body text + any attachments
   - Calls sanitise API (Claude Haiku)
@@ -249,15 +204,15 @@ CREATE POLICY "tenant_isolation" ON quotes
   - Inserts into `enquiries` table with `source: 'email'`
   - Triggers Supabase Realtime notification to dashboard
 
-- [x] **7.3** Attachment handling:
+- [ ] **7.3** Attachment handling:
   - If PDF attached, extract text using edge function
   - If image attached, store URL and flag for vision processing
 
-- [x] **7.4** Duplicate detection:
+- [ ] **7.4** Duplicate detection:
   - Before inserting, check if similar embedding already exists (similarity > 0.95)
   - If duplicate, flag rather than create new row
 
-- [x] **7.5** Thread awareness:
+- [ ] **7.5** Thread awareness:
   - Group emails by subject thread
   - Link reply emails to original enquiry row
 
