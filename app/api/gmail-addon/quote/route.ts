@@ -1,8 +1,16 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
-import { findSimilarQuotes } from '@/lib/ai/rag';
+import { createAdminClient } from '@/lib/supabase/admin';
+import { findSimilarQuotes, type SimilarQuote } from '@/lib/ai/rag';
 import { QUOTE_GENERATOR_PROMPT, ROUGH_QUOTE_GENERATOR_PROMPT, detectQuoteMode } from '@/lib/ai/prompts';
 import { buildPricingContext } from '@/lib/ai/pricing';
+import {
+  calculateRailingMaterials,
+  calculateRailingLabour,
+  buildRailingPromptSection,
+  type RailingDims,
+  type CostBreakdown,
+} from '@/lib/ai/material-takeoff';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -10,6 +18,11 @@ function validateApiKey(req: NextRequest): boolean {
   const authHeader = req.headers.get('authorization');
   if (!authHeader?.startsWith('Bearer ')) return false;
   return authHeader.slice(7) === process.env.GMAIL_ADDON_API_KEY;
+}
+
+function isRailingProduct(productType: string | undefined, emailBody: string): boolean {
+  const text = `${productType ?? ''} ${emailBody}`.toLowerCase();
+  return /railing|balustrade/.test(text);
 }
 
 export async function POST(req: NextRequest) {
@@ -24,12 +37,14 @@ export async function POST(req: NextRequest) {
     tenant_id,
     complexity_multiplier = 1.0,
     assumptions,
+    railing_dims,
   } = body as {
     email_subject: string;
     email_body: string;
     tenant_id: string;
     complexity_multiplier?: number;
     assumptions?: Array<{ label: string; value: string }>;
+    railing_dims?: RailingDims;
   };
 
   if (!email_body || !tenant_id) {
@@ -40,21 +55,72 @@ export async function POST(req: NextRequest) {
 
   const quoteMode = detectQuoteMode(enquiry_text, assumptions);
 
-  const [similarQuotes, pricingResult] = await Promise.all([
+  // Detect if this is a railing job with full dimensions for material takeoff
+  const productTypeAssumption = assumptions?.find((a) =>
+    /product.?type/i.test(a.label)
+  )?.value;
+  const hasRailingDims =
+    railing_dims &&
+    railing_dims.total_length_m > 0 &&
+    railing_dims.height_m > 0 &&
+    isRailingProduct(productTypeAssumption, email_body);
+
+  // Fetch master rates and run material takeoff in parallel when applicable
+  const [similarQuotes, pricingResult, masterRates, railingCalc] = await Promise.all([
     findSimilarQuotes(enquiry_text, tenant_id, 3),
-    quoteMode === 'precise'
+    quoteMode === 'precise' && !hasRailingDims
       ? buildPricingContext(enquiry_text, tenant_id, complexity_multiplier).catch((err) => {
           console.error('Pricing context failed (non-fatal):', err);
           return { context: '', minimumValue: null };
         })
       : Promise.resolve({ context: '', minimumValue: null }),
+    hasRailingDims
+      ? Promise.resolve(
+          createAdminClient()
+            .from('master_rates')
+            .select('fabrication_day_rate, installation_day_rate')
+            .eq('tenant_id', tenant_id)
+            .single()
+        ).then((r) => r.data).catch(() => null)
+      : Promise.resolve(null),
+    hasRailingDims
+      ? calculateRailingMaterials(railing_dims!, tenant_id).catch((err) => {
+          console.error('Material takeoff failed (non-fatal):', err);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
-  const pricingSection = pricingResult.context ? `\n\n${pricingResult.context}` : '';
+  // Build railing labour once we have master rates and material breakdown
+  const railingLabour =
+    hasRailingDims && railingCalc && masterRates
+      ? calculateRailingLabour(
+          railing_dims!.total_length_m,
+          railing_dims!.design_style,
+          masterRates.fabrication_day_rate,
+          masterRates.installation_day_rate
+        )
+      : null;
+
+  // Build pricing section — railing exact costs take priority over generic pricing context
+  let pricingSection = '';
+  if (hasRailingDims && railingCalc && railingLabour && masterRates) {
+    pricingSection =
+      '\n\n' +
+      buildRailingPromptSection(
+        railingCalc,
+        railingLabour,
+        masterRates.fabrication_day_rate,
+        masterRates.installation_day_rate,
+        railing_dims!.finish ?? 'Primer + paint'
+      );
+  } else if (pricingResult.context) {
+    pricingSection = `\n\n${pricingResult.context}`;
+  }
 
   const similarContext =
     similarQuotes.length > 0
-      ? `\n\nSimilar historical jobs:\n${similarQuotes
+      ? `\n\nSimilar historical jobs:\n${(similarQuotes as SimilarQuote[])
           .map(
             (q, i) =>
               `Job ${i + 1} (similarity: ${(q.similarity * 100).toFixed(0)}%${q.is_golden ? ', WON' : ''}):
@@ -98,6 +164,8 @@ export async function POST(req: NextRequest) {
     missing_info: string[];
     product_type: string;
     material: string;
+    finishing_cost?: number;
+    cost_breakdown?: CostBreakdown;
   };
 
   try {
@@ -120,6 +188,29 @@ export async function POST(req: NextRequest) {
     aiResult.reasoning += ` Note: Minimum job value of £${minimumValue.toLocaleString()} applied.`;
   }
 
+  // If Claude didn't return cost_breakdown but we have the data, build it server-side
+  let costBreakdown: CostBreakdown | undefined = aiResult.cost_breakdown;
+  if (!costBreakdown && railingCalc && railingLabour) {
+    const finishingCost = aiResult.finishing_cost ?? 0;
+    const subtotal =
+      railingCalc.total_material_cost +
+      railingLabour.manufacture_cost +
+      railingLabour.install_cost +
+      finishingCost;
+    const contingency = Math.round(subtotal * 0.1);
+    costBreakdown = {
+      material_cost: railingCalc.total_material_cost,
+      manufacture_cost: railingLabour.manufacture_cost,
+      manufacture_days: railingLabour.manufacture_days,
+      install_cost: railingLabour.install_cost,
+      install_days: railingLabour.install_days,
+      engineers: railingLabour.engineers,
+      finishing_cost: finishingCost,
+      subtotal,
+      contingency,
+    };
+  }
+
   return NextResponse.json({
     price_low: aiResult.price_low,
     price_high: aiResult.price_high,
@@ -128,7 +219,8 @@ export async function POST(req: NextRequest) {
     missing_info: aiResult.missing_info ?? [],
     product_type: aiResult.product_type,
     material: aiResult.material,
-    similar_quote_ids: similarQuotes.map((q) => q.id),
+    similar_quote_ids: (similarQuotes as SimilarQuote[]).map((q) => q.id),
     quote_mode: quoteMode,
+    ...(costBreakdown ? { cost_breakdown: costBreakdown } : {}),
   });
 }

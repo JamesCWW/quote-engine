@@ -114,6 +114,16 @@ function guessComplexity_(material) {
   return 'standard';
 }
 
+// Detect product type category from a product_type string
+function detectProductType_(productType) {
+  if (!productType) return 'gates';
+  var pt = String(productType).toLowerCase();
+  if (pt.includes('railing') || pt.includes('balustrade')) return 'railings';
+  if (pt.includes('handrail') || pt.includes('step')) return 'handrails';
+  if (pt.includes('pedestrian')) return 'pedestrian_gates';
+  return 'gates';
+}
+
 // =============================================================================
 // THREAD HELPER
 // =============================================================================
@@ -340,68 +350,152 @@ function onShowAssumptions(event) {
 /**
  * Recalculate with the filled assumptions form.
  * event.formInput contains all SelectionInput / TextInput field values.
+ * Dispatches to product-type-specific logic.
  */
 function onRecalculate(event) {
   var f = event.formInput || {};
+  var q = cacheGet_('quote') || {};
 
-  var material    = f.material         || 'mild_steel';
-  var complexity  = f.complexity       || 'standard';
-  var gateType    = f.gate_type        || 'manual';
-  var motorType   = f.motor_type       || 'none';
-  var accessCtrl  = f.access_control   || 'none';
-  var power       = f.power_available  || 'yes';
-  var installType = f.install_type     || 'brick_to_brick';
-  var supplyType  = f.supply_type      || 'supply_and_install';
-  var notes       = f.notes            || '';
+  // Determine product type: form selector takes priority, then cached result
+  var rawType     = f.product_type || (q.product_type || '');
+  var productType = detectProductType_(rawType);
 
-  var assumptions = [
-    { label: 'Material',           value: materialLabel_(material)   },
-    { label: 'Design complexity',  value: complexityLabel_(complexity) },
-    { label: 'Gate type',          value: gateType === 'electric' ? 'Electric automated' : 'Manual' },
-    { label: 'Installation type',  value: installLabel_(installType) },
-    { label: 'Supply scope',       value: supplyLabel_(supplyType)   },
-  ];
+  var assumptions = [];
+  var railingDims = null;
 
-  if (gateType === 'electric') {
-    assumptions.push({ label: 'Motor type',      value: motorLabel_(motorType)  });
-    assumptions.push({ label: 'Access control',  value: accessLabel_(accessCtrl) });
-    assumptions.push({ label: 'Power on site',   value: power === 'yes' ? 'Yes' : 'No – needs consumer unit connection' });
+  if (productType === 'railings') {
+    var totalLength    = parseFloat(f.total_length_m          || '0');
+    var height         = parseFloat(f.height_m                || '1.0');
+    var postSpacing    = parseFloat(f.post_spacing_m          || '2.5');
+    var barSpacing     = parseFloat(f.upright_bar_spacing_mm  || '112');
+    var uprightSize    = f.upright_bar_size    || '10mm square';
+    var topRail        = f.top_rail_section    || '40x10mm flat bar';
+    var bottomRail     = f.bottom_rail_section || '40x10mm flat bar';
+    var postSize       = f.post_size           || 'SHS 40x40x4mm';
+    var fixingMethod   = f.fixing_method       || 'Core drilled into ground';
+    var designStyle    = f.design_style        || 'vertical bars';
+    var finish         = f.finish              || 'Primer + paint';
+    var supplyTypeR    = f.supply_type         || 'supply_and_install';
+
+    railingDims = {
+      total_length_m:         totalLength,
+      height_m:               height,
+      upright_bar_size:       uprightSize,
+      top_rail_section:       topRail,
+      bottom_rail_section:    bottomRail,
+      post_size:              postSize,
+      post_spacing_m:         postSpacing,
+      upright_bar_spacing_mm: barSpacing,
+      design_style:           designStyle,
+      finish:                 finish,
+    };
+
+    assumptions = [
+      { label: 'Product Type',            value: 'Railings' },
+      { label: 'Total length (m)',         value: String(totalLength) },
+      { label: 'Height (m)',               value: String(height) },
+      { label: 'Upright bar size',         value: uprightSize },
+      { label: 'Top rail section',         value: topRail },
+      { label: 'Bottom rail section',      value: bottomRail },
+      { label: 'Post size',               value: postSize },
+      { label: 'Post spacing (m)',         value: String(postSpacing) },
+      { label: 'Bar spacing (mm)',         value: String(barSpacing) },
+      { label: 'Fixing method',           value: fixingMethod },
+      { label: 'Design style',            value: designStyle },
+      { label: 'Finish',                  value: finish },
+      { label: 'Supply scope',            value: supplyLabel_(supplyTypeR) },
+    ].filter(function(a) { return a.value && a.value !== '0'; });
+
+  } else if (productType === 'pedestrian_gates') {
+    assumptions = [
+      { label: 'Product Type',    value: 'Pedestrian Gate' },
+      { label: 'Width (mm)',      value: f.gate_width_mm   || '' },
+      { label: 'Height (mm)',     value: f.gate_height_mm  || '' },
+      { label: 'Material',        value: f.gate_material   || 'Mild Steel' },
+      { label: 'Design style',    value: f.gate_design     || '' },
+      { label: 'Hinge side',      value: f.hinge_side      || '' },
+      { label: 'Lock type',       value: f.lock_type       || '' },
+      { label: 'Post type',       value: f.post_type       || '' },
+      { label: 'Finish',          value: f.finish          || '' },
+    ].filter(function(a) { return a.value; });
+
+  } else if (productType === 'handrails') {
+    assumptions = [
+      { label: 'Product Type',        value: 'Handrails / Steps' },
+      { label: 'Number of steps',     value: f.num_steps       || '' },
+      { label: 'Total length (m)',    value: f.total_length_m  || '' },
+      { label: 'Rail height (mm)',    value: f.rail_height_mm  || '900' },
+      { label: 'Style',               value: f.handrail_style  || '' },
+      { label: 'Fixing method',       value: f.fixing_method   || '' },
+      { label: 'Finish',              value: f.finish          || '' },
+    ].filter(function(a) { return a.value; });
+
+  } else {
+    // Gates (default) — original logic
+    var material    = f.material         || 'mild_steel';
+    var complexity  = f.complexity       || 'standard';
+    var gateType    = f.gate_type        || 'manual';
+    var motorType   = f.motor_type       || 'none';
+    var accessCtrl  = f.access_control   || 'none';
+    var power       = f.power_available  || 'yes';
+    var installType = f.install_type     || 'brick_to_brick';
+    var supplyType  = f.supply_type      || 'supply_and_install';
+    var notes       = f.notes           || '';
+
+    assumptions = [
+      { label: 'Material',           value: materialLabel_(material)    },
+      { label: 'Design complexity',  value: complexityLabel_(complexity) },
+      { label: 'Gate type',          value: gateType === 'electric' ? 'Electric automated' : 'Manual' },
+      { label: 'Installation type',  value: installLabel_(installType)  },
+      { label: 'Supply scope',       value: supplyLabel_(supplyType)    },
+    ];
+
+    if (gateType === 'electric') {
+      assumptions.push({ label: 'Motor type',     value: motorLabel_(motorType)   });
+      assumptions.push({ label: 'Access control', value: accessLabel_(accessCtrl) });
+      assumptions.push({ label: 'Power on site',  value: power === 'yes' ? 'Yes' : 'No – needs consumer unit connection' });
+    }
+    if (notes) {
+      assumptions.push({ label: 'Additional notes', value: notes });
+    }
   }
-  if (notes) {
-    assumptions.push({ label: 'Additional notes', value: notes });
-  }
 
-  var multiplier  = COMPLEXITY_MULTIPLIERS[complexity] || 1.0;
-  var subject     = cacheGet_('subject')    || '';
-  var body        = cacheGet_('body')       || '';
+  var multiplier  = COMPLEXITY_MULTIPLIERS[f.complexity] || 1.0;
+  var subject     = cacheGet_('subject')     || '';
+  var body        = cacheGet_('body')        || '';
   var threadCount = cacheGet_('threadCount') || 1;
-  var messageId   = cacheGet_('messageId')  || '';
+  var messageId   = cacheGet_('messageId')   || '';
   var p           = getProps_();
 
   try {
-    var result = apiPost_('/api/gmail-addon/quote', {
+    var payload = {
       email_subject:         subject,
       email_body:            body,
       tenant_id:             p.tenantId,
       complexity_multiplier: multiplier,
       assumptions:           assumptions,
-    });
+    };
+
+    if (railingDims && railingDims.total_length_m > 0) {
+      payload.railing_dims = railingDims;
+    }
+
+    var result = apiPost_('/api/gmail-addon/quote', payload);
 
     if (result.code !== 200) {
       return errorResponse_('API error ' + result.code + ': ' + (result.body.error || 'Unknown'));
     }
 
-    var q = result.body;
-    q.assumptions = assumptions; // carry through for save
+    var qResult = result.body;
+    qResult.assumptions = assumptions;
 
-    cacheSet_('quote',       q);
+    cacheSet_('quote',       qResult);
     cacheSet_('assumptions', assumptions);
 
-    // Pop assumptions card, update result card underneath
     return CardService.newActionResponseBuilder()
       .setNavigation(CardService.newNavigation()
         .popCard()
-        .updateCard(buildResultCard_(q, threadCount, messageId)))
+        .updateCard(buildResultCard_(qResult, threadCount, messageId)))
       .build();
 
   } catch (e) {
@@ -632,6 +726,30 @@ function buildResultCard_(q, threadCount, messageId) {
     );
   }
 
+  // ── Cost breakdown (collapsible — precise railing estimates only) ─────────
+  if (q.cost_breakdown) {
+    var cb = q.cost_breakdown;
+    var lines = [
+      'Materials:    £' + fmt_(cb.material_cost),
+      'Manufacture:  £' + fmt_(cb.manufacture_cost) + ' (' + cb.manufacture_days + ' days × £507)',
+      'Installation: £' + fmt_(cb.install_cost) + ' (' + cb.install_days + ' days × ' + cb.engineers + ' engineers × £523.84)',
+      'Finishing:    £' + fmt_(cb.finishing_cost),
+      '──────────────────────',
+      'Subtotal:     £' + fmt_(cb.subtotal),
+      'Contingency:  £' + fmt_(cb.contingency) + ' (10%)',
+      '──────────────────────',
+      'ESTIMATE:     £' + fmt_(q.price_low) + ' – £' + fmt_(q.price_high),
+    ].join('\n');
+
+    card.addSection(
+      CardService.newCardSection()
+        .setHeader('Cost Breakdown')
+        .setCollapsible(true)
+        .setNumUncollapsibleWidgets(0)
+        .addWidget(CardService.newTextParagraph().setText(lines))
+    );
+  }
+
   // ── Clarifying questions ─────────────────────────────────────────────────
   if (q.missing_info && q.missing_info.length > 0) {
     var qSection = CardService.newCardSection().setHeader('❓ Clarifying Questions');
@@ -711,16 +829,280 @@ function buildResultCard_(q, threadCount, messageId) {
 }
 
 /**
- * Assumptions form panel.
- * suggestedComplexity: pre-selects the complexity dropdown (from photo analysis or AI guess).
+ * Assumptions form panel — dispatches to product-type-specific builder.
  */
 function buildAssumptionsCard_(existingResult, suggestedComplexity) {
+  var productType = detectProductType_(existingResult.product_type);
+  if (productType === 'railings')        return buildRailingsAssumptionsCard_(existingResult);
+  if (productType === 'pedestrian_gates') return buildPedestrianGatesAssumptionsCard_(existingResult);
+  if (productType === 'handrails')       return buildHandrailsAssumptionsCard_(existingResult);
+  return buildGatesAssumptionsCard_(existingResult, suggestedComplexity);
+}
+
+// ── Shared action footer ────────────────────────────────────────────────────
+function addFormActions_(card) {
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newTextButton()
+          .setText('🔁  Recalculate with Assumptions')
+          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+          .setOnClickAction(CardService.newAction().setFunctionName('onRecalculate'))
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('← Back')
+          .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+      )
+  );
+  return card;
+}
+
+// ── Shared finish dropdown ──────────────────────────────────────────────────
+function addFinishDropdown_(section) {
+  section.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('finish')
+      .setTitle('Finish')
+      .addItem('Primer + paint',            'Primer + paint',            true)
+      .addItem('Hot dip galvanised',         'Hot dip galvanised',         false)
+      .addItem('Galvanised + powder coat',   'Galvanised + powder coat',   false)
+      .addItem('Powder coat only',           'Powder coat only',           false)
+  );
+  return section;
+}
+
+// ── RAILINGS assumptions card ───────────────────────────────────────────────
+function buildRailingsAssumptionsCard_(existingResult) {
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Railing Details'));
+
+  // Dimensions
+  var dimSection = CardService.newCardSection().setHeader('Dimensions');
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('total_length_m').setTitle('Total length (metres)')
+      .setHint('e.g. 12.5')
+  );
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('height_m').setTitle('Height (metres)')
+      .setHint('e.g. 1.1')
+  );
+  card.addSection(dimSection);
+
+  // Sections
+  var secSection = CardService.newCardSection().setHeader('Steel Sections');
+  secSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('upright_bar_size').setTitle('Upright bar size')
+      .addItem('10mm square', '10mm square', true)
+      .addItem('12mm square', '12mm square', false)
+      .addItem('14mm square', '14mm square', false)
+      .addItem('16mm square', '16mm square', false)
+      .addItem('20mm square', '20mm square', false)
+      .addItem('25mm square', '25mm square', false)
+  );
+  secSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('top_rail_section').setTitle('Top rail section')
+      .addItem('40x10mm flat bar',  '40x10mm flat bar',  true)
+      .addItem('50x10mm flat bar',  '50x10mm flat bar',  false)
+      .addItem('30x6mm flat bar',   '30x6mm flat bar',   false)
+      .addItem('SHS 40x40x4mm',     'SHS 40x40x4mm',     false)
+  );
+  secSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('bottom_rail_section').setTitle('Bottom rail section')
+      .addItem('40x10mm flat bar',  '40x10mm flat bar',  true)
+      .addItem('50x10mm flat bar',  '50x10mm flat bar',  false)
+      .addItem('30x6mm flat bar',   '30x6mm flat bar',   false)
+      .addItem('SHS 40x40x4mm',     'SHS 40x40x4mm',     false)
+  );
+  secSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('post_size').setTitle('Post size')
+      .addItem('SHS 40x40x4mm',   'SHS 40x40x4mm',   true)
+      .addItem('SHS 50x50x3mm',   'SHS 50x50x3mm',   false)
+      .addItem('SHS 60x60x5mm',   'SHS 60x60x5mm',   false)
+      .addItem('SHS 80x80x6mm',   'SHS 80x80x6mm',   false)
+      .addItem('SHS 100x100x6mm', 'SHS 100x100x6mm', false)
+  );
+  card.addSection(secSection);
+
+  // Spacing & fixing
+  var spacingSection = CardService.newCardSection().setHeader('Spacing & Fixing');
+  spacingSection.addWidget(
+    CardService.newTextInput().setFieldName('post_spacing_m').setTitle('Post spacing (metres)')
+      .setHint('Default: 2.5').setValue('2.5')
+  );
+  spacingSection.addWidget(
+    CardService.newTextInput().setFieldName('upright_bar_spacing_mm').setTitle('Upright bar spacing (mm)')
+      .setHint('Default: 112').setValue('112')
+  );
+  spacingSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('fixing_method').setTitle('Fixing method')
+      .addItem('Core drilled into ground', 'Core drilled into ground', true)
+      .addItem('Bolt down plate',           'Bolt down plate',          false)
+      .addItem('Welded to existing',        'Welded to existing',       false)
+      .addItem('Wall mounted',              'Wall mounted',             false)
+  );
+  card.addSection(spacingSection);
+
+  // Design & finish
+  var designSection = CardService.newCardSection().setHeader('Design & Finish');
+  designSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('design_style').setTitle('Design style')
+      .addItem('Vertical bars',             'vertical bars',             true)
+      .addItem('Vertical with top detail',  'vertical with top detail',  false)
+      .addItem('Decorative with infill',    'decorative with infill',    false)
+      .addItem('Heritage traditional',      'heritage traditional',      false)
+  );
+  addFinishDropdown_(designSection);
+  designSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('supply_type').setTitle('Scope')
+      .addItem('Supply and install', 'supply_and_install', true)
+      .addItem('Supply only',        'supply_only',        false)
+  );
+  card.addSection(designSection);
+
+  return addFormActions_(card).build();
+}
+
+// ── PEDESTRIAN GATES assumptions card ──────────────────────────────────────
+function buildPedestrianGatesAssumptionsCard_(existingResult) {
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Pedestrian Gate Details'));
+
+  var dimSection = CardService.newCardSection().setHeader('Dimensions');
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('gate_width_mm').setTitle('Width (mm)').setHint('e.g. 900')
+  );
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('gate_height_mm').setTitle('Height (mm)').setHint('e.g. 1800')
+  );
+  card.addSection(dimSection);
+
+  var specSection = CardService.newCardSection().setHeader('Specification');
+  specSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('gate_material').setTitle('Material')
+      .addItem('Mild Steel', 'Mild Steel', true)
+      .addItem('Aluminium',  'Aluminium',  false)
+  );
+  specSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('gate_design').setTitle('Design style')
+      .addItem('Simple flat bar',       'Simple flat bar',       true)
+      .addItem('Standard decorative',   'Standard decorative',   false)
+      .addItem('Highly decorative',     'Highly decorative',     false)
+  );
+  specSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('hinge_side').setTitle('Hinge side')
+      .addItem('Left',   'Left',   true)
+      .addItem('Right',  'Right',  false)
+      .addItem('Either', 'Either', false)
+  );
+  specSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('lock_type').setTitle('Lock type')
+      .addItem('Simple latch',         'Simple latch',         true)
+      .addItem('Lockable drop bolt',   'Lockable drop bolt',   false)
+      .addItem('Digital keypad lock',  'Digital keypad lock',  false)
+  );
+  specSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('post_type').setTitle('Post type')
+      .addItem('Brick to brick',    'Brick to brick',    true)
+      .addItem('Concrete in posts', 'Concrete in posts', false)
+      .addItem('Bolt down posts',   'Bolt down posts',   false)
+  );
+  addFinishDropdown_(specSection);
+  card.addSection(specSection);
+
+  return addFormActions_(card).build();
+}
+
+// ── HANDRAILS / STEPS assumptions card ─────────────────────────────────────
+function buildHandrailsAssumptionsCard_(existingResult) {
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Handrail / Steps Details'));
+
+  var dimSection = CardService.newCardSection().setHeader('Dimensions');
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('num_steps').setTitle('Number of steps').setHint('e.g. 4')
+  );
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('total_length_m').setTitle('Total length (metres)').setHint('e.g. 3.0')
+  );
+  dimSection.addWidget(
+    CardService.newTextInput().setFieldName('rail_height_mm').setTitle('Rail height (mm)')
+      .setHint('Default: 900').setValue('900')
+  );
+  card.addSection(dimSection);
+
+  var designSection = CardService.newCardSection().setHeader('Design & Fixing');
+  designSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('handrail_style').setTitle('Style')
+      .addItem('Simple tube rail',          'Simple tube rail',          true)
+      .addItem('Flat bar with uprights',    'Flat bar with uprights',    false)
+      .addItem('Decorative with scroll',    'Decorative with scroll',    false)
+  );
+  designSection.addWidget(
+    CardService.newSelectionInput()
+      .setType(CardService.SelectionInputType.DROPDOWN)
+      .setFieldName('fixing_method').setTitle('Fixing method')
+      .addItem('Wall mounted',              'Wall mounted',              true)
+      .addItem('Post fixed',                'Post fixed',                false)
+      .addItem('Core drilled into ground',  'Core drilled into ground',  false)
+  );
+  addFinishDropdown_(designSection);
+  card.addSection(designSection);
+
+  return addFormActions_(card).build();
+}
+
+// ── GATES assumptions card (original, default) ──────────────────────────────
+function buildGatesAssumptionsCard_(existingResult, suggestedComplexity) {
   var mat       = (existingResult.material || '').toLowerCase();
   var isAlum    = mat.includes('alum');
   var defCmplx  = suggestedComplexity || guessComplexity_(existingResult.material) || 'standard';
 
   var card = CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Confirm Assumptions'));
+
+  // Product type selector (shown when type is unclear)
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader('Product Type')
+      .addWidget(
+        CardService.newSelectionInput()
+          .setType(CardService.SelectionInputType.DROPDOWN)
+          .setFieldName('product_type')
+          .setTitle('Product type')
+          .addItem('Driveway / Pedestrian Gates', 'gates',           true)
+          .addItem('Railings / Balustrade',       'railings',        false)
+          .addItem('Pedestrian Gates',            'pedestrian_gates',false)
+          .addItem('Handrails / Steps',           'handrails',       false)
+      )
+  );
 
   // ── Materials & Design ───────────────────────────────────────────────────
   card.addSection(
@@ -798,7 +1180,7 @@ function buildAssumptionsCard_(existingResult, suggestedComplexity) {
           .setType(CardService.SelectionInputType.DROPDOWN)
           .setFieldName('install_type')
           .setTitle('Installation Type')
-          .addItem('Brick to brick',    'brick_to_brick',   true)
+          .addItem('Brick to brick',    'brick_to_brick',    true)
           .addItem('Concrete in posts', 'concrete_in_posts', false)
       )
       .addWidget(
@@ -824,23 +1206,7 @@ function buildAssumptionsCard_(existingResult, suggestedComplexity) {
       )
   );
 
-  // ── Actions ──────────────────────────────────────────────────────────────
-  card.addSection(
-    CardService.newCardSection()
-      .addWidget(
-        CardService.newTextButton()
-          .setText('🔁  Recalculate with Assumptions')
-          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-          .setOnClickAction(CardService.newAction().setFunctionName('onRecalculate'))
-      )
-      .addWidget(
-        CardService.newTextButton()
-          .setText('← Back')
-          .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
-      )
-  );
-
-  return card.build();
+  return addFormActions_(card).build();
 }
 
 /** Photo analysis result card. */

@@ -14,6 +14,18 @@ interface SimilarQuote {
   similarity: number;
 }
 
+export interface CostBreakdown {
+  material_cost: number;
+  manufacture_cost: number;
+  manufacture_days: number;
+  install_cost: number;
+  install_days: number;
+  engineers: number;
+  finishing_cost: number;
+  subtotal: number;
+  contingency: number;
+}
+
 export interface QuoteResultData {
   generated_quote_id: string;
   enquiry_id: string;
@@ -26,6 +38,7 @@ export interface QuoteResultData {
   material: string;
   similar_quotes: SimilarQuote[];
   quote_mode?: 'rough' | 'precise';
+  cost_breakdown?: CostBreakdown;
 }
 
 interface Props {
@@ -34,6 +47,82 @@ interface Props {
   tenantId: string;
   onReset: () => void;
   onAddDetails?: () => void;
+}
+
+function CostBreakdownPanel({
+  breakdown,
+  priceLow,
+  priceHigh,
+}: {
+  breakdown: CostBreakdown;
+  priceLow: number;
+  priceHigh: number;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="mt-4 rounded-md border border-gray-200 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="w-full flex items-center justify-between px-4 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+      >
+        <span className="text-xs font-semibold text-gray-700 uppercase tracking-wide">
+          Cost Breakdown
+        </span>
+        <span className="text-gray-400 text-sm">{open ? '▲' : '▼'}</span>
+      </button>
+
+      {open && (
+        <div className="px-4 py-3 bg-white font-mono text-xs text-gray-700 space-y-1">
+          <BreakdownRow label="Materials" value={breakdown.material_cost} />
+          <BreakdownRow
+            label="Manufacture"
+            value={breakdown.manufacture_cost}
+            note={`${breakdown.manufacture_days} days × £507`}
+          />
+          <BreakdownRow
+            label="Installation"
+            value={breakdown.install_cost}
+            note={`${breakdown.install_days} days × ${breakdown.engineers} engineers × £523.84`}
+          />
+          <BreakdownRow label="Finishing" value={breakdown.finishing_cost} />
+          <div className="border-t border-gray-200 pt-1 mt-1" />
+          <BreakdownRow label="Subtotal" value={breakdown.subtotal} bold />
+          <BreakdownRow label="Contingency (10%)" value={breakdown.contingency} />
+          <div className="border-t border-gray-200 pt-1 mt-1" />
+          <div className="flex justify-between font-semibold">
+            <span>ESTIMATE</span>
+            <span>
+              {fmt(priceLow)} – {fmt(priceHigh)}
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function BreakdownRow({
+  label,
+  value,
+  note,
+  bold,
+}: {
+  label: string;
+  value: number;
+  note?: string;
+  bold?: boolean;
+}) {
+  return (
+    <div className={`flex justify-between gap-4 ${bold ? 'font-semibold' : ''}`}>
+      <span className="text-gray-500">
+        {label}
+        {note && <span className="text-gray-400 ml-1">({note})</span>}
+      </span>
+      <span>{fmt(value)}</span>
+    </div>
+  );
 }
 
 const CONFIDENCE_STYLES: Record<string, string> = {
@@ -163,6 +252,10 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset, on
               ))}
             </ul>
           </div>
+        )}
+
+        {result.cost_breakdown && (
+          <CostBreakdownPanel breakdown={result.cost_breakdown} priceLow={result.price_low} priceHigh={result.price_high} />
         )}
       </div>
 

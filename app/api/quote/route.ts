@@ -2,23 +2,36 @@ import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { createAdminClient } from '@/lib/supabase/admin';
-import { findSimilarQuotes, extractSpecsFromImage } from '@/lib/ai/rag';
+import { findSimilarQuotes, extractSpecsFromImage, type SimilarQuote } from '@/lib/ai/rag';
 import { QUOTE_GENERATOR_PROMPT, ROUGH_QUOTE_GENERATOR_PROMPT, detectQuoteMode } from '@/lib/ai/prompts';
 import { buildPricingContext } from '@/lib/ai/pricing';
+import {
+  calculateRailingMaterials,
+  calculateRailingLabour,
+  buildRailingPromptSection,
+  type RailingDims,
+  type CostBreakdown,
+} from '@/lib/ai/material-takeoff';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+function isRailingProduct(productType: string | undefined, enquiryText: string): boolean {
+  const text = `${productType ?? ''} ${enquiryText}`.toLowerCase();
+  return /railing|balustrade/.test(text);
+}
 
 export async function POST(req: NextRequest) {
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
 
   const body = await req.json();
-  const { enquiry_text, image_urls, tenant_id, enquiry_id, assumptions } = body as {
+  const { enquiry_text, image_urls, tenant_id, enquiry_id, assumptions, railing_dims } = body as {
     enquiry_text: string;
     image_urls?: string[];
     tenant_id: string;
     enquiry_id?: string;
     assumptions?: Array<{ label: string; value: string }>;
+    railing_dims?: RailingDims;
   };
 
   if (!enquiry_text || !tenant_id) {
@@ -31,7 +44,6 @@ export async function POST(req: NextRequest) {
   let enquiryId: string;
 
   if (enquiry_id) {
-    // Reuse existing enquiry (e.g. opened from dashboard detail page)
     enquiryId = enquiry_id;
     await supabase.from('enquiries').update({ status: 'quoting' }).eq('id', enquiry_id);
   } else {
@@ -61,7 +73,6 @@ export async function POST(req: NextRequest) {
       if (specs) imageContext = `\n\nPhoto analysis: ${specs}`;
     } catch (err) {
       console.error('Vision extraction failed:', err);
-      // Non-fatal: continue without image context
     }
   }
 
@@ -69,23 +80,72 @@ export async function POST(req: NextRequest) {
 
   const quoteMode = detectQuoteMode(fullEnquiryText, assumptions);
 
-  // 3. RAG + pricing lookup — pricing only needed for precise mode
-  const [similarQuotes, pricingResult] = await Promise.all([
+  // Detect if this is a railing job with full dimensions for material takeoff
+  const productTypeAssumption = assumptions?.find((a) =>
+    /product.?type/i.test(a.label)
+  )?.value;
+  const hasRailingDims =
+    railing_dims &&
+    railing_dims.total_length_m > 0 &&
+    railing_dims.height_m > 0 &&
+    isRailingProduct(productTypeAssumption, fullEnquiryText);
+
+  // 3. RAG + pricing + material takeoff in parallel
+  const [similarQuotes, pricingResult, masterRates, railingCalc] = await Promise.all([
     findSimilarQuotes(fullEnquiryText, tenant_id, 3),
-    quoteMode === 'precise'
+    quoteMode === 'precise' && !hasRailingDims
       ? buildPricingContext(fullEnquiryText, tenant_id).catch((err) => {
           console.error('Pricing context failed (non-fatal):', err);
           return { context: '', minimumValue: null };
         })
       : Promise.resolve({ context: '', minimumValue: null }),
+    hasRailingDims
+      ? Promise.resolve(
+          supabase
+            .from('master_rates')
+            .select('fabrication_day_rate, installation_day_rate')
+            .eq('tenant_id', tenant_id)
+            .single()
+        ).then((r) => r.data).catch(() => null)
+      : Promise.resolve(null),
+    hasRailingDims
+      ? calculateRailingMaterials(railing_dims!, tenant_id).catch((err) => {
+          console.error('Material takeoff failed (non-fatal):', err);
+          return null;
+        })
+      : Promise.resolve(null),
   ]);
 
-  const pricingSection = pricingResult.context ? `\n\n${pricingResult.context}` : '';
+  const railingLabour =
+    hasRailingDims && railingCalc && masterRates
+      ? calculateRailingLabour(
+          railing_dims!.total_length_m,
+          railing_dims!.design_style,
+          masterRates.fabrication_day_rate,
+          masterRates.installation_day_rate
+        )
+      : null;
 
-  // 4. Build Sonnet context
+  // 4. Build pricing section
+  let pricingSection = '';
+  if (hasRailingDims && railingCalc && railingLabour && masterRates) {
+    pricingSection =
+      '\n\n' +
+      buildRailingPromptSection(
+        railingCalc,
+        railingLabour,
+        masterRates.fabrication_day_rate,
+        masterRates.installation_day_rate,
+        railing_dims!.finish ?? 'Primer + paint'
+      );
+  } else if (pricingResult.context) {
+    pricingSection = `\n\n${pricingResult.context}`;
+  }
+
+  // 5. Build Sonnet context
   const similarContext =
     similarQuotes.length > 0
-      ? `\n\nSimilar historical jobs:\n${similarQuotes
+      ? `\n\nSimilar historical jobs:\n${(similarQuotes as SimilarQuote[])
           .map(
             (q, i) =>
               `Job ${i + 1} (similarity: ${(q.similarity * 100).toFixed(0)}%${q.is_golden ? ', WON' : ''}):
@@ -98,7 +158,6 @@ export async function POST(req: NextRequest) {
           .join('\n\n')}`
       : '\n\nNo similar historical jobs found in database — estimate from first principles.';
 
-  // 5. Build assumptions context
   const assumptionsSection =
     assumptions && assumptions.length > 0
       ? `\n\nConfirmed facts (treat these as certain — do not mark as missing info):\n${assumptions.map((a) => `- ${a.label}: ${a.value}`).join('\n')}`
@@ -129,6 +188,8 @@ export async function POST(req: NextRequest) {
     missing_info: string[];
     product_type: string;
     material: string;
+    finishing_cost?: number;
+    cost_breakdown?: CostBreakdown;
   };
 
   try {
@@ -144,7 +205,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // 7. Enforce minimum job value if set for this job type
+  // 7. Enforce minimum job value
   const minimumValue = pricingResult.minimumValue;
   if (minimumValue && aiResult.price_low < minimumValue) {
     aiResult.price_low = minimumValue;
@@ -153,13 +214,36 @@ export async function POST(req: NextRequest) {
       ` Note: This job type has a minimum value of £${minimumValue.toLocaleString()}. Estimate adjusted accordingly.`;
   }
 
+  // Build cost_breakdown if we have railing data
+  let costBreakdown: CostBreakdown | undefined = aiResult.cost_breakdown;
+  if (!costBreakdown && railingCalc && railingLabour) {
+    const finishingCost = aiResult.finishing_cost ?? 0;
+    const subtotal =
+      railingCalc.total_material_cost +
+      railingLabour.manufacture_cost +
+      railingLabour.install_cost +
+      finishingCost;
+    const contingency = Math.round(subtotal * 0.1);
+    costBreakdown = {
+      material_cost: railingCalc.total_material_cost,
+      manufacture_cost: railingLabour.manufacture_cost,
+      manufacture_days: railingLabour.manufacture_days,
+      install_cost: railingLabour.install_cost,
+      install_days: railingLabour.install_days,
+      engineers: railingLabour.engineers,
+      finishing_cost: finishingCost,
+      subtotal,
+      contingency,
+    };
+  }
+
   // 8. Save to generated_quotes
   const { data: generatedQuote, error: gqError } = await supabase
     .from('generated_quotes')
     .insert({
       tenant_id,
       enquiry_id: enquiryId,
-      similar_quote_ids: similarQuotes.map((q) => q.id),
+      similar_quote_ids: (similarQuotes as SimilarQuote[]).map((q) => q.id),
       ai_reasoning: aiResult.reasoning,
       price_low: aiResult.price_low,
       price_high: aiResult.price_high,
@@ -174,7 +258,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: gqError.message }, { status: 500 });
   }
 
-  // Update enquiry with extracted specs
   await supabase
     .from('enquiries')
     .update({
@@ -198,5 +281,6 @@ export async function POST(req: NextRequest) {
     material: aiResult.material,
     similar_quotes: similarQuotes,
     quote_mode: quoteMode,
+    ...(costBreakdown ? { cost_breakdown: costBreakdown } : {}),
   });
 }
