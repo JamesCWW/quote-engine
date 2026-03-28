@@ -182,17 +182,24 @@ export async function POST(req: NextRequest) {
     }>;
   };
 
+  console.log('[quote/route] Raw Claude response:', content.text);
+
   try {
-    const jsonText = content.text
-      .replace(/^```(?:json)?\n?/, '')
-      .replace(/\n?```$/, '')
-      .trim();
-    aiResult = JSON.parse(jsonText);
+    const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) throw new Error('No JSON found in response');
+    aiResult = JSON.parse(jsonMatch[0]);
   } catch {
-    return NextResponse.json(
-      { error: 'Failed to parse AI response', raw: content.text },
-      { status: 500 }
-    );
+    console.error('[quote/route] Failed to parse AI response:', content.text);
+    return NextResponse.json({
+      error: true,
+      raw_response: content.text,
+      price_low: 0,
+      price_high: 0,
+      confidence: 'low',
+      reasoning: 'Failed to parse estimate - please try again',
+      clarifying_questions: [],
+      components: [],
+    });
   }
 
   const minimumValue = pricingResult.minimumValue;

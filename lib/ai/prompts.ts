@@ -110,6 +110,8 @@ Return JSON only, no surrounding text:
     }
   ]
 }
+
+Return ONLY a valid JSON object. No markdown, no backticks, no explanation. Start your response with { and end with }
 `;
 
 export function buildChatbotSystemPrompt(
@@ -217,6 +219,8 @@ Return JSON only, no surrounding text:
   "product_type": "string",
   "material": "string (or 'Not specified')"
 }
+
+Return ONLY a valid JSON object. No markdown, no backticks, no explanation. Start your response with { and end with }
 `;
 
 export const SANITISER_PROMPT = `
