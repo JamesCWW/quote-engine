@@ -188,7 +188,11 @@ export async function generateQuote(params: {
     throw new Error('Unexpected AI response type');
   }
 
-  let aiResult: {
+  const jsonMatch = content.text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) {
+    throw new Error(`No JSON found in AI response: ${content.text}`);
+  }
+  const aiResult: {
     price_low: number;
     price_high: number;
     confidence: 'low' | 'medium' | 'high';
@@ -206,13 +210,7 @@ export async function generateQuote(params: {
     }>;
     options?: Array<{ name: string; price_low: number; price_high: number }>;
     job_components?: JobComponent[];
-  };
-
-  const jsonMatch = content.text.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) {
-    throw new Error(`No JSON found in AI response: ${content.text}`);
-  }
-  aiResult = JSON.parse(jsonMatch[0]);
+  } = JSON.parse(jsonMatch[0]);
 
   // Enforce minimum prices
   enforceMinimumPrices(aiResult, fullEnquiryText);
