@@ -1,0 +1,209 @@
+[
+  {
+    "thread_id": "19d34d19377f0b92",
+    "subject": "You've got a new submission on the HubSpot Form \"HLF | Contact Us\"",
+    "email_count": 1,
+    "emails": [
+      {
+        "from": "HubSpot Forms <noreply@notifications.hubspot.com>",
+        "date": "Sat, 28 Mar 2026 15:20:43 +0100",
+        "body_length": 973,
+        "body_preview": "You&#x27;ve got a new submission on the HubSpot Form &quot;HLF &#x7c; Contact Us&quot;\r\n\r\nYou&#x27;ve got a new submission on the HubSpot Form &quot;HLF &#x7c; Contact Us&quot;\r\nSubmitted through API ",
+        "body_captured": true
+      }
+    ],
+    "attachments": [],
+    "combined_text_length": 1158,
+    "combined_preview": "--- Email ---\nSubject: You've got a new submission on the HubSpot Form \"HLF | Contact Us\"\nDate: Sat, 28 Mar 2026 15:20:43 +0100\nFrom: HubSpot Forms <noreply@notifications.hubspot.com>\n\nYou&#x27;ve got a new submission on the HubSpot Form &quot;HLF &#x7c; Contact Us&quot;\r\n\r\nYou&#x27;ve got a new sub"
+  },
+  {
+    "thread_id": "19d33c681cd7245d",
+    "subject": "New Gates",
+    "email_count": 1,
+    "emails": [
+      {
+        "from": "Ian Johnson <ianshere@outlook.com>",
+        "date": "Sat, 28 Mar 2026 09:28:58 +0000",
+        "body_length": 108,
+        "body_preview": "Mandy     -please pay this invoice immediately so the gates can be manufactured this week\r\n\r\n😊     Dad   xx",
+        "body_captured": true
+      }
+    ],
+    "attachments": [
+      {
+        "filename": "Invoice INV-942.pdf",
+        "type": "application/pdf",
+        "pdf_text_length": 960,
+        "pdf_preview": "Helions Forge Ltd\nUnit 1, Park Dairy, Mill Rd,\nWest Wratting\nCambridge\nCB21 5LT\nBank Details:\nHelions Forge Ltd\nLloyds Bank\nSort Code: 309626\nAccount Number: 41642668\n_________________________________",
+        "pdf_captured": true
+      }
+    ],
+    "combined_text_length": 441,
+    "combined_preview": "--- Email ---\nSubject: New Gates\nDate: Sat, 28 Mar 2026 09:28:58 +0000\nFrom: Ian Johnson <ianshere@outlook.com>\n\nMandy     -please pay this invoice immediately so the gates can be manufactured this week\r\n\r\n😊     Dad   xx\n\n--- QUOTE PDF ---\nHelions Forge Ltd\nUnit 1, Park Dairy, Mill Rd,\nWest Wrattin"
+  },
+  {
+    "thread_id": "19d28a8840bd547e",
+    "subject": "Prospect house elm farm park gates",
+    "email_count": 5,
+    "emails": [
+      {
+        "from": "Duncan Haydon <dhaydon@seamans.co.uk>",
+        "date": "Thu, 26 Mar 2026 05:40:17 +0000",
+        "body_length": 521,
+        "body_preview": "Good morning\r\n\r\nHow's progress ?\r\nWelcome advice to the gates return date please\r\n\r\nThank you\r\n\r\ndh\r\n\r\nKind Regards\r\nDuncan Haydon\r\nManaging Director\r\nMain:01359 230430\r\nEmail:dhaydon@seamans.co.uk\r\nW",
+        "body_captured": true
+      },
+      {
+        "from": "Duncan Haydon <dhaydon@seamans.co.uk>",
+        "date": "Thu, 26 Mar 2026 16:22:03 +0000",
+        "body_length": 884,
+        "body_preview": "Afternoon.\r\n\r\nI welcome advise , we have been pretty patient in this matter and look forward to again finding our site 'gated'\r\n\r\nIn anticipation\r\n\r\ndh\r\n\r\nKind Regards\r\nDuncan Haydon\r\nManaging Directo",
+        "body_captured": true
+      },
+      {
+        "from": "Helions Forge <info@helionsforge.com>",
+        "date": "Fri, 27 Mar 2026 19:38:06 +0000",
+        "body_length": 1437,
+        "body_preview": "Hi Duncan,\r\n\r\nApologies for the delayed response, we've had a couple members of staff off\r\nsick and I have been covering installations.\r\n\r\nWe have completed the works required to fix the gates and are",
+        "body_captured": true
+      },
+      {
+        "from": "Duncan Haydon <dhaydon@seamans.co.uk>",
+        "date": "Fri, 27 Mar 2026 20:01:11 +0000",
+        "body_length": 2652,
+        "body_preview": "Thanks Stuart for the reply\r\n\r\nWhilst I welcome the update I am still unaware of a date they are to be returned.\r\n\r\nGalvaniser and powder coat , will  they be done and reinstalled for 02.04 ?\r\nI appre",
+        "body_captured": true
+      },
+      {
+        "from": "Helions Forge <info@helionsforge.com>",
+        "date": "Fri, 27 Mar 2026 20:14:31 +0000",
+        "body_length": 3315,
+        "body_preview": "Hi Duncan,\r\n\r\nThe galvanising process usually takes between 2-4 days depending on their\r\ncurrent lead times and the powder coating could take an additional five\r\nworking days.\r\n\r\nI would expect the ga",
+        "body_captured": true
+      }
+    ],
+    "attachments": [
+      {
+        "filename": "image283958.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      },
+      {
+        "filename": "image154803.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      },
+      {
+        "filename": "image154803.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      },
+      {
+        "filename": "image154803.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      },
+      {
+        "filename": "image524546.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      },
+      {
+        "filename": "image154803.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      },
+      {
+        "filename": "image524546.jpg",
+        "type": "image/jpeg",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      }
+    ],
+    "combined_text_length": 9542,
+    "combined_preview": "--- Email ---\nSubject: Prospect house elm farm park gates\nDate: Thu, 26 Mar 2026 05:40:17 +0000\nFrom: Duncan Haydon <dhaydon@seamans.co.uk>\n\nGood morning\r\n\r\nHow's progress ?\r\nWelcome advice to the gates return date please\r\n\r\nThank you\r\n\r\ndh\r\n\r\nKind Regards\r\nDuncan Haydon\r\nManaging Director\r\nMain:013"
+  },
+  {
+    "thread_id": "19d2fa9f0cbbfb4d",
+    "subject": "Questions Regarding Project & Invoice",
+    "email_count": 1,
+    "emails": [
+      {
+        "from": "Helions Forge <info@helionsforge.com>",
+        "date": "Fri, 27 Mar 2026 17:21:23 +0000",
+        "body_length": 1525,
+        "body_preview": "Hi Greg,\r\n\r\nThanks for your time on the phone earlier today.\r\n\r\nPlease find the answers to your questions listed below. I am back in the\r\noffice now and would be happy to discuss this in more detail o",
+        "body_captured": true
+      }
+    ],
+    "attachments": [
+      {
+        "filename": "HF240326GB.xlsx - AUTOEST (1).pdf",
+        "type": "application/pdf",
+        "pdf_text_length": 1071,
+        "pdf_preview": "Helions Forge Ltd\nUnit 1, Park Dairy, Mill Rd\nWest Wratting\nCambridge\nCB21 5LT\nAdditional Intercom Unit with Installation Included\nCustomer Details: \tEmail: \tinfo@helionsforge.com\nPhone: \t01223-618253",
+        "pdf_captured": true
+      },
+      {
+        "filename": "HF030326GB.xlsx - AUTOEST.pdf",
+        "type": "application/pdf",
+        "pdf_text_length": 1053,
+        "pdf_preview": "Helions Forge Ltd\nUnit 1, Park Dairy, Mill Rd\nWest Wratting\nCambridge\nCB21 5LT\nAdditional Ground Loops (Qty.2) with Installation\nCustomer Details: \tEmail: \tinfo@helionsforge.com\nPhone: \t01223-618253\nG",
+        "pdf_captured": true
+      },
+      {
+        "filename": "Invoice INV-935 (1).pdf",
+        "type": "application/pdf",
+        "pdf_text_length": 1050,
+        "pdf_preview": "Helions Forge Ltd\nUnit 1, Park Dairy, Mill Rd,\nWest Wratting\nCambridge\nCB21 5LT\nBank Details:\nHelions Forge Ltd\nLloyds Bank\nSort Code: 309626\nAccount Number: 41642668\n_________________________________",
+        "pdf_captured": true
+      },
+      {
+        "filename": "Email Regarding Brickwork.png",
+        "type": "image/png",
+        "pdf_text_length": 0,
+        "pdf_preview": "",
+        "pdf_captured": false
+      }
+    ],
+    "combined_text_length": 2329,
+    "combined_preview": "--- Email ---\nSubject: Questions Regarding Project & Invoice\nDate: Fri, 27 Mar 2026 17:21:23 +0000\nFrom: Helions Forge <info@helionsforge.com>\n\nHi Greg,\r\n\r\nThanks for your time on the phone earlier today.\r\n\r\nPlease find the answers to your questions listed below. I am back in the\r\noffice now and wou"
+  },
+  {
+    "thread_id": "19d2f7ad82ba52fd",
+    "subject": "Helions Forge | Enquiry",
+    "email_count": 2,
+    "emails": [
+      {
+        "from": "Helions Forge <info@helionsforge.com>",
+        "date": "Fri, 27 Mar 2026 13:29:32 +0000",
+        "body_length": 890,
+        "body_preview": "Good afternoon,\r\n\r\nThank you very much for your enquiry. We would love to discuss your project\r\nwith you. If you could send us approximate measurements (including the\r\nheight), a photo of the space an",
+        "body_captured": true
+      },
+      {
+        "from": "Fariba Thomson <fariba.thomson@btinternet.com>",
+        "date": "Fri, 27 Mar 2026 15:24:13 +0000",
+        "body_length": 0,
+        "body_preview": "",
+        "body_captured": false
+      }
+    ],
+    "attachments": [],
+    "combined_text_length": 1020,
+    "combined_preview": "--- Email ---\nSubject: Helions Forge | Enquiry\nDate: Fri, 27 Mar 2026 13:29:32 +0000\nFrom: Helions Forge <info@helionsforge.com>\n\nGood afternoon,\r\n\r\nThank you very much for your enquiry. We would love to discuss your project\r\nwith you. If you could send us approximate measurements (including the\r\nhe"
+  }
+]

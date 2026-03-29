@@ -6,7 +6,9 @@
  * /api/sanitise → /api/embed pipeline without needing the Next.js server running.
  *
  * Run with:
- *   npx ts-node scripts/import-gmail.ts
+ *   npx ts-node scripts/import-gmail.ts            # full import
+ *   npx ts-node scripts/import-gmail.ts --dry-run  # preview what would be imported
+ *   npx ts-node scripts/import-gmail.ts --test      # inspect first 5 threads, no DB writes
  *
  * On first run, a browser window opens for Gmail OAuth consent.
  * Token is cached in scripts/token.json for subsequent runs.
@@ -30,6 +32,12 @@ const SCRIPTS_DIR = path.join(__dirname);
 const TOKEN_PATH = path.join(SCRIPTS_DIR, 'token.json');
 const PROCESSED_PATH = path.join(SCRIPTS_DIR, 'processed-threads.json');
 const ERROR_LOG_PATH = path.join(SCRIPTS_DIR, 'import-errors.log');
+const TEST_REPORT_PATH = path.join(SCRIPTS_DIR, 'import-test-report.json');
+
+// ── Flags ──────────────────────────────────────────────────────────────────
+
+const TEST_MODE = process.argv.includes('--test');
+const DRY_RUN_MODE = process.argv.includes('--dry-run');
 
 // ── Gmail search ───────────────────────────────────────────────────────────
 
@@ -38,7 +46,43 @@ const SEARCH_TERMS = [
   'balustrade', 'staircase', 'railing', 'gate',
   'steel', 'metalwork', 'supply', 'install', 'fabricat',
 ];
-const GMAIL_QUERY = `(${SEARCH_TERMS.join(' OR ')}) newer_than:365d`;
+const GMAIL_QUERY = `(${SEARCH_TERMS.join(' OR ')}) newer_than:730d`;
+
+// ── Filter constants ───────────────────────────────────────────────────────
+
+const ENQUIRY_WORDS = [
+  'quote', 'quotation', 'estimate', 'enquiry', 'enquire',
+  'price', 'pricing', 'how much', 'cost', 'interested in',
+  'looking for', 'looking to', 'please quote',
+  'supply and fit', 'supply and install', 'can you provide',
+];
+
+const PRODUCT_WORDS = [
+  'gate', 'gates', 'railing', 'railings', 'fence', 'fencing',
+  'handrail', 'balcony', 'iron', 'steel', 'aluminium',
+  'driveway', 'pedestrian', 'automation', 'automated',
+  'electric gate', 'sliding gate',
+];
+
+const EXCLUDE_FROM_PATTERNS = [
+  'noreply@', 'no-reply@', 'notifications@',
+  'hubspot', 'stripe', 'xero', 'quickbooks', '@royalmail',
+  'invoicing@', 'billing@', 'donotreply@',
+];
+
+const EXCLUDE_SUBJECT_PATTERNS = [
+  'payment received', 'receipt', 'order confirmation',
+  'delivery notification', 'tracking', 'your order',
+];
+
+// Matches PDF filenames that are Helions Forge quote documents
+const QUOTE_PDF_FILENAME_RE = /HF|[Qq]uote|[Qq]uotation|QUOTE/;
+
+// Image MIME types to skip (don't download or include in combined text)
+const SKIP_IMAGE_TYPES = new Set([
+  'image/jpeg', 'image/jpg', 'image/png',
+  'image/gif', 'image/webp',
+]);
 
 // ── Sanitiser prompt (mirrors lib/ai/prompts.ts) ───────────────────────────
 
@@ -218,6 +262,9 @@ async function extractPdfAttachments(
 
   for (const part of pdfParts) {
     const filename = part.filename ?? 'attachment.pdf';
+    const isQuotePdf = QUOTE_PDF_FILENAME_RE.test(filename);
+    const label = isQuotePdf ? 'HELIONS FORGE QUOTE PDF' : 'ATTACHED PDF';
+
     try {
       const attRes = await gmail.users.messages.attachments.get({
         userId: 'me',
@@ -236,7 +283,7 @@ async function extractPdfAttachments(
       const text = result.text.trim();
       if (text) {
         console.log(`    [PDF] Extracted text from ${filename} (email ${emailIndex} of ${totalEmails})`);
-        texts.push(`--- QUOTE PDF (email ${emailIndex} of ${totalEmails}, ${date}) ---\n${text}`);
+        texts.push(`--- ${label} (email ${emailIndex} of ${totalEmails}, ${date}) ---\n${text}`);
       } else {
         console.log(`    [PDF] Skipped ${filename} — no text content (image-only PDF?)`);
       }
@@ -245,27 +292,205 @@ async function extractPdfAttachments(
     }
   }
 
-  // Log non-PDF attachments that were skipped
+  // Log skipped attachments (images and other non-PDF types)
   if (payload.parts) {
-    const nonPdfAttachments = collectNonPdfAttachments(payload.parts);
-    for (const part of nonPdfAttachments) {
-      console.log(`    [ATT] Skipped non-PDF attachment: ${part.filename ?? part.mimeType}`);
+    for (const part of collectSkippedAttachments(payload.parts)) {
+      const reason = SKIP_IMAGE_TYPES.has(part.mimeType) ? 'image' : 'non-PDF';
+      console.log(`    [ATT] Skipped ${reason} attachment: ${part.filename ?? part.mimeType}`);
     }
   }
 
   return texts;
 }
 
-function collectNonPdfAttachments(parts: any[]): any[] {
+function collectSkippedAttachments(parts: any[]): any[] {
   const atts: any[] = [];
   for (const part of parts) {
     if (part.body?.attachmentId && part.mimeType !== 'application/pdf') {
       atts.push(part);
     } else if (part.parts) {
-      atts.push(...collectNonPdfAttachments(part.parts));
+      atts.push(...collectSkippedAttachments(part.parts));
     }
   }
   return atts;
+}
+
+// ── Thread filter ──────────────────────────────────────────────────────────
+
+type FilterVerdict =
+  | { include: true; reason: 'outbound quote' | 'inbound enquiry' }
+  | { include: false; reason: string };
+
+/**
+ * Evaluates whether a thread should be imported.
+ * Operates on already-fetched message data (format: 'full').
+ * Does NOT download attachment content — PDF filenames are used for Condition A.
+ * Note: the invoice exclusion checks email body text only, not PDF text.
+ */
+function evaluateThread(messages: any[]): FilterVerdict {
+  let hasHelionsFrom = false;
+  let hasExternalFrom = false;
+  let combinedText = '';
+  let quotePdfFilenames: string[] = [];
+
+  for (const msg of messages) {
+    const headers = msg.payload?.headers ?? [];
+    const from = getHeader(headers, 'from');
+    const subject = getHeader(headers, 'subject');
+    const body = extractBody(msg.payload ?? {});
+    const fromLower = from.toLowerCase();
+    const subjectLower = subject.toLowerCase();
+    const bodyLower = body.toLowerCase();
+
+    // Hard exclusion: blocked sender patterns
+    if (EXCLUDE_FROM_PATTERNS.some(p => fromLower.includes(p))) {
+      return { include: false, reason: `excluded sender (${from})` };
+    }
+
+    // Hard exclusion: blocked subject patterns
+    if (EXCLUDE_SUBJECT_PATTERNS.some(p => subjectLower.includes(p))) {
+      return { include: false, reason: `excluded subject pattern ("${subject}")` };
+    }
+
+    // Track FROM types
+    if (fromLower.includes('helionsforge.com')) {
+      hasHelionsFrom = true;
+    } else {
+      hasExternalFrom = true;
+    }
+
+    // Accumulate searchable text
+    combinedText += ' ' + subjectLower + ' ' + bodyLower;
+
+    // Collect PDF filenames from this message
+    if (msg.payload?.parts) {
+      for (const part of collectPdfParts(msg.payload.parts)) {
+        if (part.filename) quotePdfFilenames.push(part.filename);
+      }
+    }
+  }
+
+  // Hard exclusion: single email with trivially short body
+  if (messages.length === 1) {
+    const body = extractBody(messages[0].payload ?? {}).trim();
+    if (body.length < 50) {
+      return { include: false, reason: 'single email, body too short (<50 chars)' };
+    }
+  }
+
+  // Soft exclusion: "invoice" subject without any product keywords in body
+  // (Checked before conditions so that pure invoice-only threads are caught,
+  //  but note this uses email text only — PDF content is not evaluated here)
+  const hasInvoiceSubject = messages.some(msg => {
+    const subject = getHeader(msg.payload?.headers ?? [], 'subject').toLowerCase();
+    return subject.includes('invoice');
+  });
+  if (hasInvoiceSubject && !PRODUCT_WORDS.some(w => combinedText.includes(w))) {
+    return { include: false, reason: 'invoice subject without product keywords in body' };
+  }
+
+  // Condition A: outbound quote — Helions Forge sent a quote PDF
+  if (hasHelionsFrom) {
+    const hasQuotePdf = quotePdfFilenames.some(fn => QUOTE_PDF_FILENAME_RE.test(fn));
+    if (hasQuotePdf) {
+      return { include: true, reason: 'outbound quote' };
+    }
+  }
+
+  // Condition B: inbound enquiry — customer email with enquiry + product keywords
+  if (hasExternalFrom) {
+    const hasEnquiryWord = ENQUIRY_WORDS.some(w => combinedText.includes(w));
+    const hasProductWord = PRODUCT_WORDS.some(w => combinedText.includes(w));
+    if (hasEnquiryWord && hasProductWord) {
+      return { include: true, reason: 'inbound enquiry' };
+    }
+  }
+
+  return { include: false, reason: 'no matching conditions' };
+}
+
+// ── Test-mode types & PDF extraction ──────────────────────────────────────
+
+interface TestEmailEntry {
+  from: string;
+  date: string;
+  body_length: number;
+  body_preview: string;
+  body_captured: boolean;
+}
+
+interface TestAttachmentEntry {
+  filename: string;
+  type: string;
+  pdf_text_length: number;
+  pdf_preview: string;
+  pdf_captured: boolean;
+}
+
+interface TestThreadReport {
+  thread_id: string;
+  subject: string;
+  email_count: number;
+  emails: TestEmailEntry[];
+  attachments: TestAttachmentEntry[];
+  combined_text_length: number;
+  combined_preview: string;
+}
+
+async function extractPdfAttachmentsForTest(
+  gmail: ReturnType<typeof google.gmail>,
+  messageId: string,
+  payload: any
+): Promise<TestAttachmentEntry[]> {
+  const pdfParts = payload.parts ? collectPdfParts(payload.parts) : [];
+  const entries: TestAttachmentEntry[] = [];
+
+  for (const part of pdfParts) {
+    const filename = part.filename ?? 'attachment.pdf';
+    const entry: TestAttachmentEntry = {
+      filename,
+      type: 'application/pdf',
+      pdf_text_length: 0,
+      pdf_preview: '',
+      pdf_captured: false,
+    };
+    try {
+      const attRes = await gmail.users.messages.attachments.get({
+        userId: 'me',
+        messageId,
+        id: part.body.attachmentId,
+      });
+      const data = attRes.data.data;
+      if (data) {
+        const buffer = Buffer.from(data.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+        const parser = new PDFParse({ data: buffer });
+        const result = await parser.getText();
+        await parser.destroy();
+        const text = result.text.trim();
+        entry.pdf_text_length = text.length;
+        entry.pdf_preview = text.slice(0, 200);
+        entry.pdf_captured = text.length > 0;
+      }
+    } catch (_err) {
+      // captured = false, lengths remain 0
+    }
+    entries.push(entry);
+  }
+
+  // Include non-PDF attachments with their mime type (images etc.)
+  if (payload.parts) {
+    for (const part of collectSkippedAttachments(payload.parts)) {
+      entries.push({
+        filename: part.filename ?? part.mimeType,
+        type: part.mimeType,
+        pdf_text_length: 0,
+        pdf_preview: '',
+        pdf_captured: false,
+      });
+    }
+  }
+
+  return entries;
 }
 
 // ── Tenant lookup ──────────────────────────────────────────────────────────
@@ -370,26 +595,34 @@ function logError(threadId: string, subject: string, err: unknown): void {
 // ── Main ───────────────────────────────────────────────────────────────────
 
 async function main() {
-  // Validate required env vars
-  const required = [
-    'GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET',
-    'ANTHROPIC_API_KEY', 'OPENAI_API_KEY',
-    'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY',
-  ];
+  // Validate required env vars — AI/DB credentials not needed for dry-run or test
+  const googleRequired = ['GOOGLE_CLIENT_ID', 'GOOGLE_CLIENT_SECRET'];
+  const fullRequired = [...googleRequired, 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'NEXT_PUBLIC_SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY'];
+  const required = (TEST_MODE || DRY_RUN_MODE) ? googleRequired : fullRequired;
   const missing = required.filter(k => !process.env[k]);
   if (missing.length) {
     console.error(`Missing env vars: ${missing.join(', ')}`);
     process.exit(1);
   }
 
-  console.log('Helions Forge — Gmail Import\n');
+  if (DRY_RUN_MODE) {
+    console.log('Helions Forge — Gmail Import [DRY RUN]\n');
+    console.log('  • Fetching and evaluating all threads');
+    console.log('  • No attachment downloads, no database writes\n');
+  } else if (TEST_MODE) {
+    console.log('Helions Forge — Gmail Import [TEST MODE]\n');
+    console.log('  • Processing first 5 threads only');
+    console.log('  • No API calls to /api/sanitise or /api/embed');
+    console.log('  • No database writes');
+    console.log(`  • Report will be saved to ${TEST_REPORT_PATH}\n`);
+  } else {
+    console.log('Helions Forge — Gmail Import\n');
+  }
 
-  const [auth, tenantId] = await Promise.all([
-    getAuthenticatedClient(),
-    getHelionsTenantId(),
-  ]);
+  const auth = await getAuthenticatedClient();
+  const tenantId = (TEST_MODE || DRY_RUN_MODE) ? '' : await getHelionsTenantId();
 
-  console.log(`Tenant ID: ${tenantId}`);
+  if (!TEST_MODE && !DRY_RUN_MODE) console.log(`Tenant ID: ${tenantId}`);
 
   const gmail = google.gmail({ version: 'v1', auth });
 
@@ -414,21 +647,94 @@ async function main() {
 
   console.log(`Found ${allThreadIds.length} threads matching search criteria.`);
 
-  const processed = loadProcessed();
-  const toProcess = allThreadIds.filter(id => !processed.has(id));
-  const skippedCount = allThreadIds.length - toProcess.length;
+  // ── Dry-run mode ───────────────────────────────────────────────────────
 
-  console.log(`Skipping ${skippedCount} already-processed threads.`);
-  console.log(`Processing ${toProcess.length} new threads.\n`);
+  if (DRY_RUN_MODE) {
+    console.log(`\nEvaluating all ${allThreadIds.length} threads...\n`);
+
+    const included: Array<{ id: string; subject: string; reason: string }> = [];
+    const excluded: Array<{ id: string; subject: string; reason: string }> = [];
+
+    for (let i = 0; i < allThreadIds.length; i++) {
+      const threadId = allThreadIds[i];
+      process.stdout.write(`\rEvaluating ${i + 1}/${allThreadIds.length}...`);
+
+      try {
+        const threadRes = await gmail.users.threads.get({
+          userId: 'me',
+          id: threadId,
+          format: 'full',
+        });
+        const messages = threadRes.data.messages ?? [];
+        const subject = getHeader(messages[0]?.payload?.headers ?? [], 'subject') || '(no subject)';
+        const verdict = evaluateThread(messages);
+
+        if (verdict.include) {
+          included.push({ id: threadId, subject, reason: verdict.reason });
+        } else {
+          excluded.push({ id: threadId, subject, reason: verdict.reason });
+        }
+      } catch (err) {
+        excluded.push({ id: threadId, subject: '(error)', reason: `fetch error: ${err instanceof Error ? err.message : String(err)}` });
+      }
+
+      // Brief pause to avoid rate-limiting
+      await new Promise(r => setTimeout(r, 100));
+    }
+
+    process.stdout.write('\r');
+
+    console.log('\n── WOULD INCLUDE ─────────────────────────────────────────────────────\n');
+    for (const t of included) {
+      console.log(`  INCLUDE [${t.reason.padEnd(17)}]  "${t.subject}"`);
+    }
+
+    console.log('\n── WOULD EXCLUDE ─────────────────────────────────────────────────────\n');
+    for (const t of excluded) {
+      console.log(`  EXCLUDE  "${t.subject}"`);
+      console.log(`           reason: ${t.reason}`);
+    }
+
+    const estSeconds = included.length * 5;
+    const estMin = Math.floor(estSeconds / 60);
+    const estSec = estSeconds % 60;
+    const estStr = estMin > 0 ? `${estMin}m ${estSec}s` : `${estSec}s`;
+
+    console.log('\n─────────────────────────────────────────────────────────────────────');
+    console.log('Dry run complete');
+    console.log(`  Total found    : ${allThreadIds.length}`);
+    console.log(`  Would include  : ${included.length}`);
+    console.log(`  Would exclude  : ${excluded.length}`);
+    console.log(`  Estimated time : ${included.length} × 5s = ${estStr}`);
+    console.log('─────────────────────────────────────────────────────────────────────\n');
+    return;
+  }
+
+  // ── Normal and test-mode processing ───────────────────────────────────
+
+  const processed = loadProcessed();
+  const unprocessed = allThreadIds.filter(id => !processed.has(id));
+  const skippedCount = allThreadIds.length - unprocessed.length;
+  const toProcess = TEST_MODE ? unprocessed.slice(0, 5) : unprocessed;
+
+  if (TEST_MODE) {
+    console.log(`Found ${allThreadIds.length} threads (${skippedCount} already processed).`);
+    console.log(`Test mode: inspecting first ${toProcess.length} unprocessed threads.\n`);
+  } else {
+    console.log(`Skipping ${skippedCount} already-processed threads.`);
+    console.log(`Processing ${toProcess.length} new threads.\n`);
+  }
 
   // ── Process each thread ────────────────────────────────────────────────
 
   let successCount = 0;
+  let filteredCount = 0;
   let errorCount = 0;
+  const testReport: TestThreadReport[] = [];
 
   for (let i = 0; i < toProcess.length; i++) {
     const threadId = toProcess[i];
-    process.stdout.write(`Processing thread ${i + 1}/${toProcess.length}...`);
+    process.stdout.write(`${TEST_MODE ? 'Inspecting' : 'Processing'} thread ${i + 1}/${toProcess.length}...`);
 
     let subject = '(unknown)';
     try {
@@ -439,11 +745,27 @@ async function main() {
         format: 'full',
       });
       const messages = threadRes.data.messages ?? [];
+      subject = getHeader(messages[0]?.payload?.headers ?? [], 'subject') || '(no subject)';
+
+      // Apply filter (skip in test mode — test mode inspects everything)
+      if (!TEST_MODE) {
+        const verdict = evaluateThread(messages);
+        if (!verdict.include) {
+          process.stdout.write(` filtered (${verdict.reason})\n`);
+          processed.add(threadId);
+          saveProcessed(processed);
+          filteredCount++;
+          continue;
+        }
+        process.stdout.write(` [${verdict.reason}]`);
+      }
 
       // Build combined text block
       const textParts: string[] = [];
       let totalPdfCount = 0;
       const totalEmails = messages.length;
+      const testEmails: TestEmailEntry[] = [];
+      const testAttachments: TestAttachmentEntry[] = [];
 
       for (let msgIdx = 0; msgIdx < messages.length; msgIdx++) {
         const msg = messages[msgIdx];
@@ -452,48 +774,86 @@ async function main() {
         const msgSubject = getHeader(headers, 'subject');
         const date = getHeader(headers, 'date');
         const from = getHeader(headers, 'from');
-        if (!subject || subject === '(unknown)') subject = msgSubject;
 
         const body = extractBody(payload).trim();
-        const pdfTexts = await extractPdfAttachments(gmail, msg.id!, payload, msgIdx + 1, totalEmails, date);
-        totalPdfCount += pdfTexts.length;
 
-        const parts: string[] = [];
-        if (body) parts.push(body);
-        parts.push(...pdfTexts);
+        if (TEST_MODE) {
+          testEmails.push({
+            from,
+            date,
+            body_length: body.length,
+            body_preview: body.slice(0, 200),
+            body_captured: body.length > 0,
+          });
+          const attEntries = await extractPdfAttachmentsForTest(gmail, msg.id!, payload);
+          testAttachments.push(...attEntries);
+          totalPdfCount += attEntries.filter(a => a.type === 'application/pdf' && a.pdf_captured).length;
 
-        if (parts.length > 0) {
-          textParts.push(`--- Email ---\nSubject: ${msgSubject}\nDate: ${date}\nFrom: ${from}\n\n${parts.join('\n\n')}`);
+          const pdfTexts = attEntries
+            .filter(a => a.type === 'application/pdf' && a.pdf_captured)
+            .map(a => {
+              const label = QUOTE_PDF_FILENAME_RE.test(a.filename) ? 'HELIONS FORGE QUOTE PDF' : 'ATTACHED PDF';
+              return `--- ${label} ---\n${a.pdf_preview}`;
+            });
+          const parts: string[] = [];
+          if (body) parts.push(body);
+          parts.push(...pdfTexts);
+          if (parts.length > 0) {
+            textParts.push(`--- Email ---\nSubject: ${msgSubject}\nDate: ${date}\nFrom: ${from}\n\n${parts.join('\n\n')}`);
+          }
+        } else {
+          const pdfTexts = await extractPdfAttachments(gmail, msg.id!, payload, msgIdx + 1, totalEmails, date);
+          totalPdfCount += pdfTexts.length;
+
+          const parts: string[] = [];
+          if (body) parts.push(body);
+          parts.push(...pdfTexts);
+
+          if (parts.length > 0) {
+            textParts.push(`--- Email ---\nSubject: ${msgSubject}\nDate: ${date}\nFrom: ${from}\n\n${parts.join('\n\n')}`);
+          }
         }
       }
 
-      if (textParts.length === 0) {
+      if (textParts.length === 0 && !TEST_MODE) {
         process.stdout.write(` skipped (no text content)\n`);
         processed.add(threadId);
         saveProcessed(processed);
-        skippedCount; // already counted
         continue;
       }
 
       let combinedText = textParts.join('\n\n');
 
-      if (totalPdfCount > 1) {
+      if (!TEST_MODE && totalPdfCount > 1) {
         combinedText = `Note: ${totalPdfCount} quote PDFs found in this thread - prices and specs may have evolved. Capture the full evolution in job_evolution field.\n\n${combinedText}`;
       }
 
-      // Sanitise → embed → insert
-      const sanitised = await sanitise(combinedText);
-      await embedAndInsert(tenantId, combinedText, sanitised);
+      if (TEST_MODE) {
+        testReport.push({
+          thread_id: threadId,
+          subject,
+          email_count: totalEmails,
+          emails: testEmails,
+          attachments: testAttachments,
+          combined_text_length: combinedText.length,
+          combined_preview: combinedText.slice(0, 300),
+        });
+        process.stdout.write(` captured\n`);
+      } else {
+        // Sanitise → embed → insert
+        const sanitised = await sanitise(combinedText);
+        await embedAndInsert(tenantId, combinedText, sanitised);
 
-      processed.add(threadId);
-      saveProcessed(processed);
-      successCount++;
-      process.stdout.write(` done\n`);
+        processed.add(threadId);
+        saveProcessed(processed);
+        successCount++;
+        process.stdout.write(` done\n`);
+      }
 
     } catch (err) {
       errorCount++;
-      logError(threadId, subject, err);
-      process.stdout.write(` ERROR (logged)\n`);
+      if (!TEST_MODE) logError(threadId, subject, err);
+      process.stdout.write(` ERROR: ${err instanceof Error ? err.message : String(err)}\n`);
     }
 
     // Brief pause to avoid rate-limiting
@@ -502,15 +862,26 @@ async function main() {
 
   // ── Summary ────────────────────────────────────────────────────────────
 
-  console.log('\n─────────────────────────────');
-  console.log('Import complete');
-  console.log(`  Processed : ${successCount}`);
-  console.log(`  Skipped   : ${skippedCount}`);
-  console.log(`  Errors    : ${errorCount}`);
-  if (errorCount > 0) {
-    console.log(`  Error log : ${ERROR_LOG_PATH}`);
+  if (TEST_MODE) {
+    fs.writeFileSync(TEST_REPORT_PATH, JSON.stringify(testReport, null, 2));
+    console.log('\n─────────────────────────────');
+    console.log('Test run complete');
+    console.log(`  Threads inspected : ${testReport.length}`);
+    console.log(`  Errors            : ${errorCount}`);
+    console.log(`  Report saved to   : ${TEST_REPORT_PATH}`);
+    console.log('─────────────────────────────\n');
+  } else {
+    console.log('\n─────────────────────────────');
+    console.log('Import complete');
+    console.log(`  Processed : ${successCount}`);
+    console.log(`  Filtered  : ${filteredCount}`);
+    console.log(`  Skipped   : ${skippedCount}`);
+    console.log(`  Errors    : ${errorCount}`);
+    if (errorCount > 0) {
+      console.log(`  Error log : ${ERROR_LOG_PATH}`);
+    }
+    console.log('─────────────────────────────\n');
   }
-  console.log('─────────────────────────────\n');
 }
 
 main().catch(err => {
