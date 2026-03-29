@@ -620,23 +620,32 @@ function onSaveEnquiry(event) {
     return errorResponse_('No estimate found — please generate one first.');
   }
 
+  Logger.log('onSaveEnquiry: subject=' + subject + ' price=' + q.price_low + '-' + q.price_high);
+
   try {
-    var result = apiPost_('/api/gmail-addon/save', {
-      tenant_id:        p.tenantId,
-      email_subject:    subject,
-      email_body:       body,
-      price_low:        q.price_low,
-      price_high:       q.price_high,
-      confidence:       q.confidence,
-      reasoning:        q.reasoning,
-      product_type:     q.product_type,
-      material:         q.material,
-      assumptions:      assumptions,
+    var savePayload = {
+      tenant_id:         p.tenantId,
+      email_subject:     subject,
+      email_body:        body,
+      price_low:         q.price_low,
+      price_high:        q.price_high,
+      confidence:        q.confidence,
+      reasoning:         q.reasoning,
+      product_type:      q.product_type,
+      material:          q.material,
+      assumptions:       assumptions,
+      missing_info:      q.missing_info || [],
       similar_quote_ids: q.similar_quote_ids || [],
-    });
+    };
+
+    Logger.log('onSaveEnquiry: payload=' + JSON.stringify(savePayload));
+
+    var result = apiPost_('/api/gmail-addon/save', savePayload);
+
+    Logger.log('onSaveEnquiry: code=' + result.code + ' body=' + JSON.stringify(result.body));
 
     if (result.code !== 200) {
-      return errorResponse_('Save failed: ' + (result.body.error || 'Unknown'));
+      return errorResponse_('Save failed (' + result.code + '): ' + JSON.stringify(result.body));
     }
 
     var saved = result.body;
@@ -648,6 +657,7 @@ function onSaveEnquiry(event) {
       .build();
 
   } catch (e) {
+    Logger.log('onSaveEnquiry: exception=' + e.message);
     return errorResponse_('Save error: ' + e.message);
   }
 }
@@ -868,6 +878,115 @@ function onGenerateCustomEstimate(event) {
   }
 }
 
+/** Generate email response from estimate and show in sidebar. */
+function onGenerateEmailResponse(event) {
+  var tone         = (event.parameters && event.parameters.tone) || 'friendly';
+  var q            = cacheGet_('quote');
+  var subject      = cacheGet_('subject')      || '';
+  var body         = cacheGet_('body')         || '';
+  var emailContext = cacheGet_('emailContext') || '';
+
+  if (!q) {
+    return errorResponse_('No estimate found — please generate one first.');
+  }
+
+  try {
+    var draftPayload = {
+      email_subject: subject,
+      email_body:    body,
+      price_low:     q.price_low,
+      price_high:    q.price_high,
+      product_type:  q.product_type,
+      material:      q.material,
+      tone:          tone,
+      quote_mode:    q.quote_mode || 'precise',
+      missing_info:  q.missing_info || [],
+      components:    (q.components && q.components.length > 1) ? q.components : [],
+      reasoning:     q.reasoning || '',
+    };
+    if (emailContext) draftPayload.email_context = emailContext;
+
+    var result = apiPost_('/api/gmail-addon/draft-reply', draftPayload);
+
+    if (result.code !== 200) {
+      return errorResponse_('Email generation failed (' + result.code + '): ' + (result.body.error || JSON.stringify(result.body)));
+    }
+
+    var draft = result.body;
+    cacheSet_('generatedEmailBody',    draft.body);
+    cacheSet_('generatedEmailSubject', draft.subject);
+
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation()
+        .pushCard(buildEmailCard_(draft.body, draft.subject, tone)))
+      .build();
+
+  } catch (e) {
+    return errorResponse_('Email generation failed: ' + e.message);
+  }
+}
+
+/** Toast shown when Copy button is pressed (clipboard unavailable in add-ons). */
+function onCopyEmailNotification(event) {
+  return CardService.newActionResponseBuilder()
+    .setNotification(CardService.newNotification()
+      .setText('Tap the text field above → Ctrl+A to select all → Ctrl+C to copy'))
+    .build();
+}
+
+/** Email preview card with tone selector and copyable text box. */
+function buildEmailCard_(emailBody, emailSubject, activeTone) {
+  var card = CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Email Response'));
+
+  // ── Tone buttons ─────────────────────────────────────────────────────────
+  var toneSection = CardService.newCardSection().setHeader('Tone');
+  [['formal', 'Formal'], ['friendly', 'Friendly'], ['quick', 'Quick']].forEach(function(pair) {
+    var t = pair[0], label = pair[1];
+    var btn = CardService.newTextButton()
+      .setText(t === activeTone ? '✓ ' + label : label)
+      .setOnClickAction(
+        CardService.newAction()
+          .setFunctionName('onGenerateEmailResponse')
+          .setParameters({ tone: t })
+      );
+    if (t === activeTone) btn.setTextButtonStyle(CardService.TextButtonStyle.FILLED);
+    toneSection.addWidget(btn);
+  });
+  card.addSection(toneSection);
+
+  // ── Email text (editable, selectable) ────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .setHeader(emailSubject || 'Reply')
+      .addWidget(
+        CardService.newTextInput()
+          .setFieldName('email_text')
+          .setTitle('Select all to copy')
+          .setValue(emailBody || '')
+          .setMultiline(true)
+      )
+  );
+
+  // ── Actions ──────────────────────────────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newTextButton()
+          .setText('📋  Copy to Clipboard')
+          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+          .setOnClickAction(CardService.newAction().setFunctionName('onCopyEmailNotification'))
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('← Back to Estimate')
+          .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+      )
+  );
+
+  return card.build();
+}
+
 // =============================================================================
 // CARD BUILDERS
 // =============================================================================
@@ -885,25 +1004,7 @@ function buildResultCard_(q, threadCount, messageId) {
     );
   }
 
-  // ── Mode indicator ───────────────────────────────────────────────────────
-  var modeSection = CardService.newCardSection();
-  if (q.quote_mode === 'rough') {
-    modeSection
-      .addWidget(CardService.newTextParagraph()
-        .setText('📊 Rough estimate — provide details for accuracy'))
-      .addWidget(
-        CardService.newTextButton()
-          .setText('➕  Add Details for Precise Estimate')
-          .setOnClickAction(CardService.newAction().setFunctionName('onShowAssumptions'))
-      );
-  } else {
-    modeSection.addWidget(
-      CardService.newTextParagraph().setText('🎯 Precise estimate — based on confirmed specs')
-    );
-  }
-  card.addSection(modeSection);
-
-  // ── Price ────────────────────────────────────────────────────────────────
+  // ── 1. Price + confidence (prominent) ────────────────────────────────────
   var priceSection = CardService.newCardSection().setHeader('💰 Price Estimate');
   priceSection.addWidget(
     CardService.newKeyValue()
@@ -922,9 +1023,55 @@ function buildResultCard_(q, threadCount, messageId) {
         .setContent(q.product_type + (q.material ? ' · ' + q.material : ''))
     );
   }
+  if (q.quote_mode === 'rough') {
+    priceSection.addWidget(
+      CardService.newTextParagraph().setText('📊 Rough estimate — add details for accuracy')
+    );
+  }
   card.addSection(priceSection);
 
-  // ── Reasoning (collapsible) ──────────────────────────────────────────────
+  // ── 2. Primary CTA: Generate Email ───────────────────────────────────────
+  card.addSection(
+    CardService.newCardSection()
+      .addWidget(
+        CardService.newTextButton()
+          .setText('📧  Generate Email Response')
+          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+          .setOnClickAction(
+            CardService.newAction()
+              .setFunctionName('onGenerateEmailResponse')
+              .setParameters({ tone: 'friendly' })
+          )
+      )
+  );
+
+  // ── 3. Secondary: Add Details ────────────────────────────────────────────
+  var detailsSection = CardService.newCardSection();
+  if (q.quote_mode === 'rough') {
+    detailsSection.addWidget(
+      CardService.newTextButton()
+        .setText('➕  Add Details for Precise Estimate')
+        .setOnClickAction(CardService.newAction().setFunctionName('onShowAssumptions'))
+    );
+  } else {
+    detailsSection.addWidget(
+      CardService.newTextButton()
+        .setText('🔧  Edit Assumptions & Recalculate')
+        .setOnClickAction(CardService.newAction().setFunctionName('onShowAssumptions'))
+    );
+  }
+  detailsSection.addWidget(
+    CardService.newTextButton()
+      .setText('✏️  Add Details')
+      .setOnClickAction(
+        CardService.newAction()
+          .setFunctionName('onShowAddDetails')
+          .setParameters({ messageId: messageId || '' })
+      )
+  );
+  card.addSection(detailsSection);
+
+  // ── 4. AI Reasoning (collapsible, closed by default) ─────────────────────
   if (q.reasoning) {
     card.addSection(
       CardService.newCardSection()
@@ -935,12 +1082,24 @@ function buildResultCard_(q, threadCount, messageId) {
     );
   }
 
-  // ── Component breakdown (mixed jobs: gates + fencing) ───────────────────
+  // ── 5. Clarifying Questions (collapsible, closed by default) ─────────────
+  if (q.missing_info && q.missing_info.length > 0) {
+    var qSection = CardService.newCardSection()
+      .setHeader('❓ Clarifying Questions')
+      .setCollapsible(true)
+      .setNumUncollapsibleWidgets(0);
+    q.missing_info.forEach(function(item) {
+      qSection.addWidget(CardService.newTextParagraph().setText('• ' + item));
+    });
+    card.addSection(qSection);
+  }
+
+  // ── 6. Component Breakdown (collapsible, closed by default) ──────────────
   if (q.components && q.components.length > 1) {
     var compSection = CardService.newCardSection()
       .setHeader('📋 Component Breakdown')
       .setCollapsible(true)
-      .setNumUncollapsibleWidgets(2);
+      .setNumUncollapsibleWidgets(0);
 
     q.components.forEach(function(comp) {
       var icon = /gate|door/i.test(comp.name) ? '🚪' : '🔧';
@@ -956,9 +1115,7 @@ function buildResultCard_(q, threadCount, messageId) {
         compSection.addWidget(CardService.newTextParagraph().setText(itemLines));
       }
     });
-    compSection.addWidget(
-      CardService.newDivider()
-    );
+    compSection.addWidget(CardService.newDivider());
     compSection.addWidget(
       CardService.newKeyValue()
         .setTopLabel('TOTAL ESTIMATE')
@@ -967,7 +1124,7 @@ function buildResultCard_(q, threadCount, messageId) {
     card.addSection(compSection);
   }
 
-  // ── Alternative options (side-by-side model quotes) ──────────────────────
+  // ── Alternative options ──────────────────────────────────────────────────
   if (q.options && q.options.length > 1) {
     var optSection = CardService.newCardSection()
       .setHeader('🔀 Alternative Options');
@@ -1005,81 +1162,7 @@ function buildResultCard_(q, threadCount, messageId) {
     );
   }
 
-  // ── Clarifying questions ─────────────────────────────────────────────────
-  if (q.missing_info && q.missing_info.length > 0) {
-    var qSection = CardService.newCardSection().setHeader('❓ Clarifying Questions');
-    q.missing_info.forEach(function(item) {
-      qSection.addWidget(CardService.newTextParagraph().setText('• ' + item));
-    });
-    card.addSection(qSection);
-  }
-
-  // ── Refine ───────────────────────────────────────────────────────────────
-  card.addSection(
-    CardService.newCardSection()
-      .setHeader('Refine')
-      .addWidget(
-        CardService.newTextButton()
-          .setText('🔧  Edit Assumptions & Recalculate')
-          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-          .setOnClickAction(CardService.newAction().setFunctionName('onShowAssumptions'))
-      )
-      .addWidget(
-        CardService.newTextButton()
-          .setText('✏️  Add Details')
-          .setOnClickAction(
-            CardService.newAction()
-              .setFunctionName('onShowAddDetails')
-              .setParameters({ messageId: messageId || '' })
-          )
-      )
-      .addWidget(
-        CardService.newTextButton()
-          .setText('🔄  Re-generate from Email')
-          .setOnClickAction(
-            CardService.newAction()
-              .setFunctionName('onGenerateEstimate')
-              .setParameters({ messageId: messageId || '' })
-          )
-      )
-  );
-
-  // ── Reply tones ──────────────────────────────────────────────────────────
-  card.addSection(
-    CardService.newCardSection()
-      .setHeader('Draft Reply')
-      .addWidget(CardService.newTextParagraph().setText('Choose a tone:'))
-      .addWidget(
-        CardService.newTextButton()
-          .setText('📋  Formal')
-          .setOnClickAction(
-            CardService.newAction()
-              .setFunctionName('onInsertReply')
-              .setParameters({ tone: 'formal' })
-          )
-      )
-      .addWidget(
-        CardService.newTextButton()
-          .setText('😊  Friendly')
-          .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
-          .setOnClickAction(
-            CardService.newAction()
-              .setFunctionName('onInsertReply')
-              .setParameters({ tone: 'friendly' })
-          )
-      )
-      .addWidget(
-        CardService.newTextButton()
-          .setText('⚡  Quick')
-          .setOnClickAction(
-            CardService.newAction()
-              .setFunctionName('onInsertReply')
-              .setParameters({ tone: 'quick' })
-          )
-      )
-  );
-
-  // ── Save ─────────────────────────────────────────────────────────────────
+  // ── 7. Save to Dashboard ─────────────────────────────────────────────────
   card.addSection(
     CardService.newCardSection()
       .addWidget(
