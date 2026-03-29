@@ -24,6 +24,7 @@ export async function POST(req: NextRequest) {
   const {
     email_subject,
     email_body,
+    email_context,
     price_low,
     price_high,
     product_type,
@@ -35,6 +36,7 @@ export async function POST(req: NextRequest) {
   } = body as {
     email_subject: string;
     email_body: string;
+    email_context?: string;
     price_low: number;
     price_high: number;
     product_type: string;
@@ -108,8 +110,12 @@ Keep it professional, to 4-5 short paragraphs.`
 - Keep it to 3-4 short paragraphs, no bullet points in the body`
 }
 
-Customer enquiry:
-${email_body.slice(0, 1500)}
+${email_context ? `Customer email thread (use for tone, greeting and customer name):
+${email_context.slice(0, 1000)}
+
+Job description used for pricing:
+${email_body.slice(0, 1000)}` : `Customer enquiry:
+${email_body.slice(0, 1500)}`}
 
 Return ONLY a JSON object with exactly two fields:
 {

@@ -272,6 +272,15 @@ function buildContextualCard(event) {
                 .setParameters({ messageId: messageId })
             )
         )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('📝  Custom Description')
+            .setOnClickAction(
+              CardService.newAction()
+                .setFunctionName('onShowCustomDescription')
+                .setParameters({ messageId: messageId })
+            )
+        )
     );
 
     return card.build();
@@ -325,6 +334,7 @@ function onGenerateEstimate(event) {
     cacheSet_('threadCount',  threadCount);
     cache_().remove('assumptions');
     cache_().remove('suggestedComplexity');
+    cache_().remove('emailContext');
     if (q.job_components && q.job_components.length > 0) {
       cacheSet_('jobComponents', q.job_components);
     } else {
@@ -658,8 +668,10 @@ function onInsertReply(event) {
     return errorResponse_('No estimate found — please generate one first.');
   }
 
+  var emailContext = cacheGet_('emailContext') || '';
+
   try {
-    var result = apiPost_('/api/gmail-addon/draft-reply', {
+    var draftPayload = {
       email_subject: subject,
       email_body:    body,
       price_low:     q.price_low,
@@ -670,7 +682,11 @@ function onInsertReply(event) {
       quote_mode:    q.quote_mode || 'precise',
       missing_info:  q.missing_info || [],
       components:    (q.components && q.components.length > 1) ? q.components : [],
-    });
+    };
+    if (emailContext) {
+      draftPayload.email_context = emailContext;
+    }
+    var result = apiPost_('/api/gmail-addon/draft-reply', draftPayload);
 
     if (result.code !== 200) {
       return errorResponse_('Draft reply error: ' + (result.body.error || 'Unknown'));
@@ -709,6 +725,146 @@ function onInsertReply(event) {
 
   } catch (e) {
     return errorResponse_('Reply draft failed: ' + e.message);
+  }
+}
+
+/** Show Add Details card (refine existing estimate with free-text). */
+function onShowAddDetails(event) {
+  var messageId = (event.parameters && event.parameters.messageId) || cacheGet_('messageId') || '';
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation()
+      .pushCard(buildAddDetailsCard_(messageId)))
+    .build();
+}
+
+/** Regenerate estimate after appending user-supplied additional details. */
+function onRegenerateWithDetails(event) {
+  var f           = event.formInput || {};
+  var extraText   = (f.add_details_text || '').trim();
+  var body        = cacheGet_('body')        || '';
+  var subject     = cacheGet_('subject')     || '';
+  var threadCount = cacheGet_('threadCount') || 1;
+  var messageId   = cacheGet_('messageId')   || '';
+  var p           = getProps_();
+
+  if (!extraText) {
+    return errorResponse_('Please enter some details before regenerating.');
+  }
+
+  var combined = body + '\n\nAdditional details/assumptions:\n' + extraText;
+
+  try {
+    var result = apiPost_('/api/gmail-addon/quote', {
+      email_subject: subject,
+      email_body:    combined,
+      tenant_id:     p.tenantId,
+    });
+
+    if (result.code !== 200) {
+      return errorResponse_('API error ' + result.code + ': ' + (result.body.error || 'Unknown'));
+    }
+
+    var q = result.body;
+    cacheSet_('quote',    q);
+    cacheSet_('body',     combined);
+    cache_().remove('assumptions');
+    if (q.job_components && q.job_components.length > 0) {
+      cacheSet_('jobComponents', q.job_components);
+    } else {
+      cache_().remove('jobComponents');
+    }
+
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation()
+        .popCard()
+        .updateCard(buildResultCard_(q, threadCount, messageId)))
+      .setNotification(CardService.newNotification().setText('✅ Estimate updated with your details'))
+      .build();
+
+  } catch (e) {
+    return errorResponse_('Regenerate failed: ' + e.message);
+  }
+}
+
+/** Show Custom Description card (price from custom text, draft reply uses email context). */
+function onShowCustomDescription(event) {
+  var messageId   = (event.parameters && event.parameters.messageId) || cacheGet_('messageId') || '';
+  var accessToken = event.gmail.accessToken;
+
+  try {
+    GmailApp.setCurrentMessageAccessToken(accessToken);
+    var message = GmailApp.getMessageById(messageId);
+    var ctx     = getThreadContext_(message, 5);
+    // Stash the original email thread so draft reply can use it for tone/greeting
+    cacheSet_('pendingEmailContext', ctx.body);
+    cacheSet_('pendingMessageId',    messageId);
+    cacheSet_('pendingSubject',      message.getSubject() || '');
+    cacheSet_('pendingThreadCount',  ctx.count);
+  } catch (e) {
+    // If we can't read the message, carry on — draft reply just won't have email context
+  }
+
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation()
+      .pushCard(buildCustomDescriptionCard_()))
+    .build();
+}
+
+/** Generate estimate from custom description text only. */
+function onGenerateCustomEstimate(event) {
+  var f               = event.formInput || {};
+  var customText      = (f.custom_description || '').trim();
+  var emailContext    = cacheGet_('pendingEmailContext') || '';
+  var subject         = cacheGet_('pendingSubject')      || cacheGet_('subject') || '';
+  var messageId       = cacheGet_('pendingMessageId')    || cacheGet_('messageId') || '';
+  var threadCount     = cacheGet_('pendingThreadCount')  || 1;
+  var p               = getProps_();
+
+  if (!customText) {
+    return errorResponse_('Please enter a description before generating.');
+  }
+
+  if (!p.apiKey || !p.tenantId) {
+    return errorResponse_('Script Properties not configured. Set ADDON_API_KEY, TENANT_ID, API_BASE_URL.');
+  }
+
+  try {
+    var result = apiPost_('/api/gmail-addon/quote', {
+      email_subject: subject,
+      email_body:    customText,
+      tenant_id:     p.tenantId,
+    });
+
+    if (result.code !== 200) {
+      return errorResponse_('API error ' + result.code + ': ' + (result.body.error || 'Unknown'));
+    }
+
+    var q = result.body;
+
+    // Persist state — body is the custom description for recalculate,
+    // emailContext is stashed separately for draft reply personalisation
+    cacheSet_('quote',        q);
+    cacheSet_('subject',      subject);
+    cacheSet_('body',         customText);
+    cacheSet_('messageId',    messageId);
+    cacheSet_('threadCount',  threadCount);
+    cacheSet_('emailContext', emailContext);
+    cache_().remove('assumptions');
+    cache_().remove('suggestedComplexity');
+    if (q.job_components && q.job_components.length > 0) {
+      cacheSet_('jobComponents', q.job_components);
+    } else {
+      cache_().remove('jobComponents');
+    }
+
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation()
+        .popCard()
+        .updateCard(buildResultCard_(q, threadCount, messageId)))
+      .build();
+
+  } catch (e) {
+    return errorResponse_('Unexpected error: ' + e.message);
   }
 }
 
@@ -867,6 +1023,15 @@ function buildResultCard_(q, threadCount, messageId) {
           .setText('🔧  Edit Assumptions & Recalculate')
           .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
           .setOnClickAction(CardService.newAction().setFunctionName('onShowAssumptions'))
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('✏️  Add Details')
+          .setOnClickAction(
+            CardService.newAction()
+              .setFunctionName('onShowAddDetails')
+              .setParameters({ messageId: messageId || '' })
+          )
       )
       .addWidget(
         CardService.newTextButton()
@@ -1494,6 +1659,73 @@ function buildMixedAssumptionsCard_(existingResult, jobComponents, suggestedComp
   card.addSection(fenceSection);
 
   return addFormActions_(card).build();
+}
+
+/** Add Details card — free-text refinement of an existing estimate. */
+function buildAddDetailsCard_(messageId) {
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Add Details to Refine Estimate'))
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName('add_details_text')
+            .setTitle('Additional details / assumptions')
+            .setHint('e.g. 4 metre wide gate opening')
+            .setMultiline(true)
+            .setValue('')
+        )
+        .addWidget(CardService.newTextParagraph()
+          .setText('Examples:\n• 4 metre wide gate opening\n• 1.8m height required\n• Include GSM intercom\n• Powder coat RAL 9005 black\n• Brick to brick installation'))
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextButton()
+            .setText('🔄  Regenerate Estimate')
+            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setOnClickAction(CardService.newAction().setFunctionName('onRegenerateWithDetails'))
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('← Back')
+            .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+        )
+    )
+    .build();
+}
+
+/** Custom Description card — price from user's own words, draft reply uses email thread. */
+function buildCustomDescriptionCard_() {
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Custom Description'))
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph()
+          .setText('Describe the job in your own words. Be as specific as you like — dimensions, materials, automation, finish etc.'))
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName('custom_description')
+            .setTitle('Job description')
+            .setHint('e.g. Supply and install a pair of automated iron driveway gates, 4m wide x 1.8m tall, underground FROG-X motors, GSM intercom, powder coat RAL 9005, brick to brick')
+            .setMultiline(true)
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextButton()
+            .setText('🎯  Generate Estimate')
+            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setOnClickAction(CardService.newAction().setFunctionName('onGenerateCustomEstimate'))
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('↩️  Back')
+            .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+        )
+    )
+    .build();
 }
 
 /** Photo analysis result card. */
