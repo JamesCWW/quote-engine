@@ -62,6 +62,7 @@ interface Props {
   tenantId: string;
   onReset: () => void;
   onAddDetails?: () => void;
+  onRegenerate?: (newText: string) => void;
 }
 
 function CostBreakdownPanel({
@@ -218,7 +219,7 @@ function fmt(n: number) {
   return new Intl.NumberFormat('en-GB', { style: 'currency', currency: 'GBP', maximumFractionDigits: 0 }).format(n);
 }
 
-export default function QuoteResult({ result, enquiryText, tenantId, onReset, onAddDetails }: Props) {
+export default function QuoteResult({ result, enquiryText, tenantId, onReset, onAddDetails, onRegenerate }: Props) {
   const [showModal, setShowModal] = useState(false);
   const [finalPrice, setFinalPrice] = useState(
     String(Math.round((result.price_low + result.price_high) / 2))
@@ -226,6 +227,9 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset, on
   const [approving, setApproving] = useState(false);
   const [approved, setApproved] = useState(false);
   const [error, setError] = useState('');
+  const [isEditingEnquiry, setIsEditingEnquiry] = useState(false);
+  const [editedText, setEditedText] = useState(enquiryText);
+  const [answers, setAnswers] = useState<Record<number, string>>({});
 
   async function handleApprove() {
     const price = parseFloat(finalPrice);
@@ -261,6 +265,18 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset, on
     setShowModal(false);
   }
 
+  function handleRegenerateWithDetails() {
+    const answeredParts = result.missing_info
+      .map((q, i) => (answers[i]?.trim() ? `- ${q}: ${answers[i].trim()}` : null))
+      .filter(Boolean);
+
+    let combined = editedText;
+    if (answeredParts.length > 0) {
+      combined += `\n\nAdditional details provided:\n${answeredParts.join('\n')}`;
+    }
+    onRegenerate?.(combined);
+  }
+
   if (approved) {
     return (
       <div className="rounded-lg border border-green-200 bg-green-50 p-6 text-center">
@@ -278,6 +294,53 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset, on
 
   return (
     <div className="space-y-6">
+      {/* Editable enquiry */}
+      {onRegenerate && (
+        <div className="rounded-lg border border-gray-200 bg-white p-4">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-gray-500 uppercase tracking-wide">Job Description</span>
+            {!isEditingEnquiry && (
+              <button
+                type="button"
+                onClick={() => setIsEditingEnquiry(true)}
+                className="text-xs text-gray-500 hover:text-gray-700 underline"
+              >
+                Edit
+              </button>
+            )}
+          </div>
+          {isEditingEnquiry ? (
+            <>
+              <textarea
+                value={editedText}
+                onChange={(e) => setEditedText(e.target.value)}
+                rows={4}
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900 resize-y"
+              />
+              <div className="flex gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => onRegenerate(editedText)}
+                  disabled={!editedText.trim()}
+                  className="flex-1 bg-gray-900 text-white text-xs font-medium py-2 px-3 rounded-md hover:bg-gray-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  Re-generate Estimate
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setIsEditingEnquiry(false); setEditedText(enquiryText); }}
+                  className="border border-gray-300 text-gray-600 text-xs py-2 px-3 rounded-md hover:bg-gray-50 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </>
+          ) : (
+            <p className="text-sm text-gray-700 whitespace-pre-wrap">{enquiryText}</p>
+          )}
+        </div>
+      )}
+
       {/* Price range */}
       <div className="rounded-lg border border-gray-200 bg-white p-6">
         {result.quote_mode && (
@@ -325,15 +388,31 @@ export default function QuoteResult({ result, enquiryText, tenantId, onReset, on
 
         {result.missing_info.length > 0 && (
           <div className="mt-4 rounded-md bg-amber-50 border border-amber-200 p-3">
-            <p className="text-xs font-semibold text-amber-800 mb-1.5">To sharpen the estimate, clarify:</p>
-            <ul className="space-y-1">
+            <p className="text-xs font-semibold text-amber-800 mb-2">To sharpen the estimate, clarify:</p>
+            <div className="space-y-2.5">
               {result.missing_info.map((q, i) => (
-                <li key={i} className="text-xs text-amber-700 flex gap-1.5">
-                  <span>•</span>
-                  <span>{q}</span>
-                </li>
+                <div key={i}>
+                  <label className="text-xs text-amber-700 block mb-1">• {q}</label>
+                  <input
+                    type="text"
+                    value={answers[i] ?? ''}
+                    onChange={(e) => setAnswers((prev) => ({ ...prev, [i]: e.target.value }))}
+                    placeholder="Your answer (optional)"
+                    className="w-full border border-amber-200 rounded px-2 py-1.5 text-xs bg-white focus:outline-none focus:ring-1 focus:ring-amber-400 placeholder-amber-300"
+                  />
+                </div>
               ))}
-            </ul>
+            </div>
+            {onRegenerate && (
+              <button
+                type="button"
+                onClick={handleRegenerateWithDetails}
+                disabled={Object.values(answers).every((v) => !v?.trim())}
+                className="mt-3 w-full bg-amber-700 text-white text-xs font-medium py-2 px-3 rounded-md hover:bg-amber-800 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Regenerate with Details
+              </button>
+            )}
           </div>
         )}
 

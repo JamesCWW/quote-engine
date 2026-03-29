@@ -14,6 +14,7 @@ export default function EnquiryForm({ tenantId }: Props) {
   const [enquiryText, setEnquiryText] = useState('');
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [imagePreview, setImagePreview] = useState<string | null>(null);
+  const [uploadedImageUrls, setUploadedImageUrls] = useState<string[]>([]);
   const [loadingMsg, setLoadingMsg] = useState('');
   const [result, setResult] = useState<QuoteResultData | null>(null);
   const [error, setError] = useState('');
@@ -32,39 +33,21 @@ export default function EnquiryForm({ tenantId }: Props) {
   function removeImage() {
     setImageFile(null);
     setImagePreview(null);
+    setUploadedImageUrls([]);
     if (fileRef.current) fileRef.current.value = '';
   }
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (!enquiryText.trim()) return;
-
+  async function runQuote(text: string, imageUrls: string[]) {
     setStage('loading');
     setError('');
+    setLoadingMsg('Analysing enquiry and finding similar jobs…');
 
     try {
-      let imageUrls: string[] = [];
-
-      // Upload photo if provided
-      if (imageFile) {
-        setLoadingMsg('Uploading photo…');
-        const fd = new FormData();
-        fd.append('file', imageFile);
-        const uploadRes = await fetch('/api/upload', { method: 'POST', body: fd });
-        if (uploadRes.ok) {
-          const { url } = await uploadRes.json();
-          imageUrls = [url];
-        }
-        // Non-fatal if upload fails — continue without image
-      }
-
-      setLoadingMsg('Analysing enquiry and finding similar jobs…');
-
       const res = await fetch('/api/quote', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          enquiry_text: enquiryText,
+          enquiry_text: text,
           image_urls: imageUrls,
           tenant_id: tenantId,
         }),
@@ -84,11 +67,40 @@ export default function EnquiryForm({ tenantId }: Props) {
     }
   }
 
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (!enquiryText.trim()) return;
+
+    setStage('loading');
+    let imageUrls: string[] = [];
+
+    if (imageFile) {
+      setLoadingMsg('Uploading photo…');
+      const fd = new FormData();
+      fd.append('file', imageFile);
+      const uploadRes = await fetch('/api/upload', { method: 'POST', body: fd });
+      if (uploadRes.ok) {
+        const { url } = await uploadRes.json();
+        imageUrls = [url];
+        setUploadedImageUrls(imageUrls);
+      }
+      // Non-fatal if upload fails — continue without image
+    }
+
+    await runQuote(enquiryText, imageUrls);
+  }
+
+  async function handleRegenerate(newText: string) {
+    setEnquiryText(newText);
+    await runQuote(newText, uploadedImageUrls);
+  }
+
   function reset() {
     setStage('form');
     setEnquiryText('');
     setImageFile(null);
     setImagePreview(null);
+    setUploadedImageUrls([]);
     setResult(null);
     setError('');
     if (fileRef.current) fileRef.current.value = '';
@@ -110,6 +122,7 @@ export default function EnquiryForm({ tenantId }: Props) {
         enquiryText={enquiryText}
         tenantId={tenantId}
         onReset={reset}
+        onRegenerate={handleRegenerate}
       />
     );
   }
