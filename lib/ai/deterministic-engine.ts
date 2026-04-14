@@ -159,21 +159,41 @@ function getMedianProduct(products: ProductRow[]): ProductRow | null {
   return sorted[Math.floor(sorted.length / 2)];
 }
 
-/** Finds the product with the closest dimensional match (width primary, height secondary). */
-function findClosestProductRow(
+/**
+ * Finds the smallest product where width_mm >= requested_width AND height_mm >= requested_height.
+ * If no product meets both constraints, returns the largest available product.
+ */
+function findSmallestFittingProduct(
   products: ProductRow[],
   width_mm: number | null,
   height_mm: number | null
-): { p: ProductRow; dist: number } | null {
+): ProductRow | null {
   if (products.length === 0) return null;
-  const scored = products.map((p) => {
-    let dist = 0;
-    if (width_mm && p.width_mm) dist += Math.abs(width_mm - p.width_mm);
-    if (height_mm && p.height_mm) dist += Math.abs(height_mm - p.height_mm);
-    return { p, dist };
+
+  // Filter to products that are at least as large as requested in both dimensions
+  const fitting = products.filter((p) => {
+    const widthOk = !width_mm || !p.width_mm || p.width_mm >= width_mm;
+    const heightOk = !height_mm || !p.height_mm || p.height_mm >= height_mm;
+    return widthOk && heightOk;
   });
-  scored.sort((a, b) => a.dist - b.dist);
-  return scored[0];
+
+  if (fitting.length > 0) {
+    // Pick smallest fitting product (by area)
+    const sorted = [...fitting].sort((a, b) => {
+      const aArea = (a.width_mm ?? 0) * (a.height_mm ?? 0);
+      const bArea = (b.width_mm ?? 0) * (b.height_mm ?? 0);
+      return aArea - bArea;
+    });
+    return sorted[0];
+  }
+
+  // No product is large enough — use the largest available
+  const sorted = [...products].sort((a, b) => {
+    const aArea = (a.width_mm ?? 0) * (a.height_mm ?? 0);
+    const bArea = (b.width_mm ?? 0) * (b.height_mm ?? 0);
+    return bArea - aArea;
+  });
+  return sorted[0];
 }
 
 // ── Main engine ────────────────────────────────────────────────────────────
@@ -220,7 +240,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     supabase
       .from('master_rates')
       .select(
-        'fabrication_day_rate, installation_day_rate, consumer_unit_connection, minimum_job_value'
+        'fabrication_day_rate, installation_day_rate, consumer_unit_connection, minimum_job_value, design_fee'
       )
       .eq('tenant_id', tenant_id)
       .single(),
@@ -263,13 +283,16 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     if (multipleItems) {
       // ── Case: Multiple items with distinct dimensions — price each separately ──
       for (const item of multipleItems) {
-        const best = findClosestProductRow(products, item.width_mm, item.height_mm);
-        if (best && best.p.price_gbp) {
-          productSupplyCost += best.p.price_gbp;
+        const best = findSmallestFittingProduct(products, item.width_mm, item.height_mm);
+        if (best && best.price_gbp) {
+          productSupplyCost += best.price_gbp;
           productFound = true;
-          if (best.dist > 0) {
+          const isRoundedUp =
+            (item.width_mm && best.width_mm && best.width_mm > item.width_mm) ||
+            (item.height_mm && best.height_mm && best.height_mm > item.height_mm);
+          if (isRoundedUp) {
             productNotes.push(
-              `Item ${multipleItems.indexOf(item) + 1}: closest size used (${item.width_mm ?? '?'}mm × ${item.height_mm ?? '?'}mm → ${best.p.width_mm ?? '?'}mm × ${best.p.height_mm ?? '?'}mm)`
+              `Item ${multipleItems.indexOf(item) + 1}: rounded up to next available size (${item.width_mm ?? '?'}mm × ${item.height_mm ?? '?'}mm → ${best.width_mm ?? '?'}mm × ${best.height_mm ?? '?'}mm)`
             );
           }
         }
@@ -281,17 +304,30 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     } else if (spec.design_name) {
       // ── Case A: Design name known ─────────────────────────────────────────
       if (hasDimensions) {
-        // Find closest size match
-        const best = findClosestProductRow(products, singleWidth, singleHeight);
-        if (best && best.p.price_gbp) {
-          productSupplyCost = best.p.price_gbp * quantity;
+        // Find smallest product that fits the requested dimensions (round up)
+        const best = findSmallestFittingProduct(products, singleWidth, singleHeight);
+        if (best && best.price_gbp) {
+          productSupplyCost = best.price_gbp * quantity;
           productFound = true;
-          productMatchedName = best.p.design_name ?? spec.design_name;
-          if (best.dist > 0) {
+          productMatchedName = best.design_name ?? spec.design_name;
+          const isRoundedUp =
+            (singleWidth && best.width_mm && best.width_mm > singleWidth) ||
+            (singleHeight && best.height_mm && best.height_mm > singleHeight);
+          const isLargestAvailable =
+            !!(singleWidth && best.width_mm && best.width_mm < singleWidth) ||
+            !!(singleHeight && best.height_mm && best.height_mm < singleHeight);
+          if (isLargestAvailable) {
             const note =
-              `Closest available size used — no exact match for ${singleWidth ?? '?'}mm × ${singleHeight ?? '?'}mm` +
-              (best.p.width_mm || best.p.height_mm
-                ? ` (matched ${best.p.width_mm ?? '?'}mm × ${best.p.height_mm ?? '?'}mm)`
+              `No product available at or above requested size (${singleWidth ?? '?'}mm × ${singleHeight ?? '?'}mm) — largest available used` +
+              (best.width_mm || best.height_mm
+                ? ` (${best.width_mm ?? '?'}mm × ${best.height_mm ?? '?'}mm)`
+                : '');
+            productNotes.push(note);
+          } else if (isRoundedUp) {
+            const note =
+              `Rounded up to next available size — no exact match for ${singleWidth ?? '?'}mm × ${singleHeight ?? '?'}mm` +
+              (best.width_mm || best.height_mm
+                ? ` (matched ${best.width_mm ?? '?'}mm × ${best.height_mm ?? '?'}mm)`
                 : '');
             productNotes.push(note);
           }
@@ -387,8 +423,12 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 'null'} install_days=${bestJobType?.install_days ?? 'null'} engineers=${bestJobType?.engineers_required ?? 'null'} min_value=£${bestJobType?.minimum_value ?? 'null'}`
   );
 
+  // Multi-pedestrian gate (qty >= 2): 1 day, 2 engineers, no quantity multiplication
+  const isMultiPedestrianGate = quantity >= 2 && spec.product_type.includes('pedestrian');
+  const effectiveInstallDays = isMultiPedestrianGate ? 1 : (bestJobType?.install_days ?? 0);
+  const effectiveEngineers = isMultiPedestrianGate ? 2 : (bestJobType?.engineers_required ?? 1);
   const installCost = bestJobType
-    ? (bestJobType.install_days ?? 0) * installRate * (bestJobType.engineers_required ?? 1)
+    ? effectiveInstallDays * installRate * effectiveEngineers
     : 0;
 
   // ── Manufacture cost — only for bespoke jobs (no product match) ────────────
@@ -457,9 +497,14 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     spec.product_type.includes('gate') ||
     spec.product_type.includes('driveway') ||
     spec.product_type.includes('pedestrian');
+  const isDrivewayGate = spec.product_type.includes('driveway');
+  const isPedestrianGate = spec.product_type.includes('pedestrian');
 
   if (isGateProduct) {
-    const post = findAcc(/driveway.*post.*large|large.*post.*driveway|gate.*post|post.*driveway/i);
+    // Driveway gates always use Large posts; other gate types use any gate post
+    const post = isDrivewayGate
+      ? findAcc(/large.*post|post.*large/i)
+      : findAcc(/gate.*post|post.*gate/i);
     if (post) accessories.push({ name: `Gate posts × 2`, amount: post.helions_price * 2 });
 
     if (isElectric) {
@@ -479,6 +524,36 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
         accessories.push({ name: 'Consumer unit connection', amount: rates.consumer_unit_connection });
       }
     }
+
+    // Aluminium gates: add custom size fee
+    if (isAluminium) {
+      const customSizeItems = acc.filter(
+        (a) => /custom.?size/i.test(a.item_name) && a.category === 'aluminium_accessories'
+      );
+      if (isDrivewayGate) {
+        // Prefer a row whose name contains 'driveway', otherwise any custom size row; fallback £140
+        const customSizeRow =
+          customSizeItems.find((a) => /driveway/i.test(a.item_name)) ??
+          customSizeItems.find((a) => !/pedestrian/i.test(a.item_name)) ??
+          customSizeItems[0];
+        const customSizeAmount = customSizeRow?.helions_price ?? 140;
+        accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
+      } else if (isPedestrianGate) {
+        // Prefer a row whose name contains 'pedestrian', otherwise any custom size row; fallback £70
+        const customSizeRow =
+          customSizeItems.find((a) => /pedestrian/i.test(a.item_name)) ??
+          customSizeItems.find((a) => !/driveway/i.test(a.item_name)) ??
+          customSizeItems[0];
+        const customSizeAmount = customSizeRow?.helions_price ?? 70;
+        accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
+      }
+    }
+  }
+
+  // Design fee — added on every job
+  const designFee = (rates as (typeof rates & { design_fee?: number | null }))?.design_fee ?? null;
+  if (designFee) {
+    accessories.push({ name: 'Design fee', amount: designFee });
   }
 
   const accessoriesTotal = accessories.reduce((sum, a) => sum + a.amount, 0);
@@ -589,8 +664,8 @@ Return JSON only:
       manufacture_cost: Math.round(manufactureCost),
       manufacture_days: adjustedManufactureDays,
       install_cost: Math.round(installCost),
-      install_days: bestJobType?.install_days ?? 0,
-      engineers: bestJobType?.engineers_required ?? 0,
+      install_days: effectiveInstallDays,
+      engineers: effectiveEngineers,
       finishing_cost: 0,
       subtotal: Math.round(basePrice),
       contingency,
