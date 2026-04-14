@@ -26,6 +26,8 @@ export interface ExtractedSpec {
   has_automation: boolean | null;
   has_intercom: boolean | null;
   installation_included: boolean | null;
+  quantity: number | null;
+  items: Array<{ width_mm: number | null; height_mm: number | null }> | null;
   confidence_per_field: Record<string, 'confirmed' | 'assumed' | 'unknown'>;
 }
 
@@ -42,6 +44,7 @@ export interface DeterministicBreakdown {
   minimum_applied: number | null;
   job_type_matched: string | null;
   product_matched: string | null;
+  notes: string[];
 }
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -70,6 +73,8 @@ Return ONLY valid JSON with this exact shape:
   "has_automation": true | false | null,
   "has_intercom": true | false | null,
   "installation_included": true | false | null,
+  "quantity": number | null,
+  "items": [{"width_mm": number | null, "height_mm": number | null}] | null,
   "confidence_per_field": {
     "product_type": "confirmed" | "assumed" | "unknown",
     "material": "confirmed" | "assumed" | "unknown",
@@ -94,6 +99,8 @@ Conversion rules:
 - If given in metres: multiply by 1000. In cm: multiply by 10. In feet: multiply by 304.8.
 - design_name: gate design names like Norfolk, Surrey, Hertfordshire, Essex, etc.
 - installation_included: default assumed true unless customer says collect/supply-only
+- quantity: number of gates/units requested. Set to 2 if "pair", "two", "both" mentioned. Default null (treated as 1).
+- items: if multiple sets of dimensions are listed, output each as an object. If only one set (or none), set to null. width_mm and height_mm in each item use the same mm conversion rules.
 
 Enquiry text:
 ${enquiryText}`,
@@ -112,8 +119,12 @@ ${enquiryText}`,
 
 function calculateConfidence(
   spec: ExtractedSpec,
-  productFound: boolean
+  productFound: boolean,
+  noDimensions: boolean
 ): 'low' | 'medium' | 'high' {
+  // No dimensions at all → always low confidence
+  if (noDimensions) return 'low';
+
   const values = Object.values(spec.confidence_per_field);
   const confirmed = values.filter((v) => v === 'confirmed').length;
   const ratio = confirmed / values.length;
@@ -131,6 +142,40 @@ const PRODUCT_TYPE_CATEGORY: Partial<Record<ExtractedSpec['product_type'], strin
   aluminium_pedestrian_gate: 'aluminium_pedestrian_gates',
 };
 
+// ── Helpers ────────────────────────────────────────────────────────────────
+
+type ProductRow = {
+  design_name: string | null;
+  width_mm: number | null;
+  height_mm: number | null;
+  price_gbp: number | null;
+  category: string;
+};
+
+/** Returns the median product by price_gbp (middle index after ascending sort). */
+function getMedianProduct(products: ProductRow[]): ProductRow | null {
+  if (products.length === 0) return null;
+  const sorted = [...products].sort((a, b) => (a.price_gbp ?? 0) - (b.price_gbp ?? 0));
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+/** Finds the product with the closest dimensional match (width primary, height secondary). */
+function findClosestProductRow(
+  products: ProductRow[],
+  width_mm: number | null,
+  height_mm: number | null
+): { p: ProductRow; dist: number } | null {
+  if (products.length === 0) return null;
+  const scored = products.map((p) => {
+    let dist = 0;
+    if (width_mm && p.width_mm) dist += Math.abs(width_mm - p.width_mm);
+    if (height_mm && p.height_mm) dist += Math.abs(height_mm - p.height_mm);
+    return { p, dist };
+  });
+  scored.sort((a, b) => a.dist - b.dist);
+  return scored[0];
+}
+
 // ── Main engine ────────────────────────────────────────────────────────────
 
 export async function runDeterministicEngine(params: QuoteParams): Promise<{
@@ -144,23 +189,15 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   // ── Step 1: Extract structured spec ───────────────────────────────────────
   const spec = await extractSpec(enquiry_text);
 
-  type ProductRow = {
-    design_name: string | null;
-    width_mm: number | null;
-    height_mm: number | null;
-    price_gbp: number | null;
-    category: string;
-  };
-
   // Resolve category for this product type
   const productCategory = PRODUCT_TYPE_CATEGORY[spec.product_type] ?? null;
   console.log(
-    `[det-engine] product_type="${spec.product_type}" → category="${productCategory ?? 'none'}" design_name="${spec.design_name ?? 'none'}"`
+    `[det-engine] product_type="${spec.product_type}" → category="${productCategory ?? 'none'}" design_name="${spec.design_name ?? 'none'}" quantity=${spec.quantity ?? 1}`
   );
 
   // Build product pricing query:
   //   - design_name known → filter by design name (precise match)
-  //   - no design_name but category known → fetch all products in category for closest-size match
+  //   - no design_name but category known → fetch all products in category for median/closest-size match
   //   - otherwise → no product data
   const productQuery = spec.design_name
     ? supabase
@@ -200,32 +237,97 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   const fabricationRate = rates?.fabrication_day_rate ?? 507;
   const installRate = rates?.installation_day_rate ?? 523.84;
 
-  // ── Step 2: Product lookup — find closest dimensional match ───────────────
+  // ── Step 2: Product lookup ─────────────────────────────────────────────────
   let productSupplyCost = 0;
   let productFound = false;
   let productMatchedName: string | null = null;
+  const productNotes: string[] = [];
 
   const products = (productRows.data ?? []) as ProductRow[];
-  console.log(`[det-engine] Product rows fetched: ${products.length}`);
+  const quantity = spec.quantity ?? 1;
+
+  // Build the list of items to price. If spec.items has multiple entries, use those.
+  // Otherwise treat it as a single item using top-level width_mm / height_mm.
+  const multipleItems =
+    spec.items && spec.items.length > 1
+      ? spec.items
+      : null;
+
+  const singleWidth = spec.width_mm;
+  const singleHeight = spec.height_mm;
+  const hasDimensions = !!(singleWidth || singleHeight || multipleItems);
+
+  console.log(`[det-engine] Product rows fetched: ${products.length}, quantity=${quantity}, multipleItems=${multipleItems?.length ?? 'no'}`);
 
   if (products.length > 0) {
-    const scored = products.map((p) => {
-      let dist = 0;
-      if (spec.width_mm && p.width_mm) dist += Math.abs(spec.width_mm - p.width_mm);
-      if (spec.height_mm && p.height_mm) dist += Math.abs(spec.height_mm - p.height_mm);
-      return { p, dist };
-    });
-    scored.sort((a, b) => a.dist - b.dist);
-    const best = scored[0].p;
-    console.log(
-      `[det-engine] Best product match: design="${best.design_name}" w=${best.width_mm}mm h=${best.height_mm}mm price=£${best.price_gbp} dist=${scored[0].dist}mm`
-    );
-    if (best.price_gbp) {
-      productSupplyCost = best.price_gbp;
-      productFound = true;
-      productMatchedName = best.design_name ?? spec.design_name;
+    if (multipleItems) {
+      // ── Case: Multiple items with distinct dimensions — price each separately ──
+      for (const item of multipleItems) {
+        const best = findClosestProductRow(products, item.width_mm, item.height_mm);
+        if (best && best.p.price_gbp) {
+          productSupplyCost += best.p.price_gbp;
+          productFound = true;
+          if (best.dist > 0) {
+            productNotes.push(
+              `Item ${multipleItems.indexOf(item) + 1}: closest size used (${item.width_mm ?? '?'}mm × ${item.height_mm ?? '?'}mm → ${best.p.width_mm ?? '?'}mm × ${best.p.height_mm ?? '?'}mm)`
+            );
+          }
+        }
+      }
+      if (productFound) {
+        productMatchedName = spec.design_name ?? null;
+        productNotes.push(`Priced as ${multipleItems.length} separate items`);
+      }
+    } else if (spec.design_name) {
+      // ── Case A: Design name known ─────────────────────────────────────────
+      if (hasDimensions) {
+        // Find closest size match
+        const best = findClosestProductRow(products, singleWidth, singleHeight);
+        if (best && best.p.price_gbp) {
+          productSupplyCost = best.p.price_gbp * quantity;
+          productFound = true;
+          productMatchedName = best.p.design_name ?? spec.design_name;
+          if (best.dist > 0) {
+            const note =
+              `Closest available size used — no exact match for ${singleWidth ?? '?'}mm × ${singleHeight ?? '?'}mm` +
+              (best.p.width_mm || best.p.height_mm
+                ? ` (matched ${best.p.width_mm ?? '?'}mm × ${best.p.height_mm ?? '?'}mm)`
+                : '');
+            productNotes.push(note);
+          }
+          if (quantity > 1) productNotes.push(`Quantity: ${quantity}`);
+        }
+      } else {
+        // Design known but no dimensions → median price
+        const median = getMedianProduct(products);
+        if (median?.price_gbp) {
+          productSupplyCost = median.price_gbp * quantity;
+          productFound = true;
+          productMatchedName = spec.design_name;
+          productNotes.push('Dimensions not provided — mid-range estimate used');
+          if (quantity > 1) productNotes.push(`Quantity: ${quantity}`);
+        }
+      }
+    } else {
+      // ── Case B: No design name → median price ─────────────────────────────
+      const median = getMedianProduct(products);
+      if (median?.price_gbp) {
+        productSupplyCost = median.price_gbp * quantity;
+        productFound = true;
+        productMatchedName = null;
+        const cat = productCategory?.replace(/_/g, ' ') ?? 'product';
+        productNotes.push(`Mid-range ${cat} price used — design not specified`);
+        if (!hasDimensions) {
+          productNotes.push('Dimensions not provided — mid-range estimate used');
+        }
+        if (quantity > 1) productNotes.push(`Quantity: ${quantity}`);
+      }
     }
   }
+
+  console.log(
+    `[det-engine] Product supply: £${Math.round(productSupplyCost)} productFound=${productFound} notes=${JSON.stringify(productNotes)}`
+  );
 
   // ── Step 3: Job type matching ─────────────────────────────────────────────
   type JobTypeRow = {
@@ -289,29 +391,50 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     ? (bestJobType.install_days ?? 0) * installRate * (bestJobType.engineers_required ?? 1)
     : 0;
 
-  // Resolve manufacture days — iron gates are bespoke fabricated, aluminium are pre-manufactured.
-  // If DB value is null or 0 for an iron driveway gate, fall back to known defaults:
-  //   automated: 4 days, manual: 2 days
-  const dbManufactureDays = bestJobType?.manufacture_days ?? null;
-  let resolvedManufactureDays: number;
+  // ── Manufacture cost — only for bespoke jobs (no product match) ────────────
+  // Named gate products (aluminium AND iron) include all fabrication cost in their
+  // product price. Manufacture cost only applies when productSupplyCost = 0.
+  let manufactureCost = 0;
 
-  if (!isAluminium && spec.product_type === 'iron_driveway_gates' && !dbManufactureDays) {
-    resolvedManufactureDays = isElectric ? 4 : 2;
+  if (!productFound) {
+    // Resolve manufacture days for bespoke fallback
+    const dbManufactureDays = bestJobType?.manufacture_days ?? null;
+    let resolvedManufactureDays: number;
+
+    if (!isAluminium && spec.product_type === 'iron_driveway_gates' && !dbManufactureDays) {
+      resolvedManufactureDays = isElectric ? 4 : 2;
+      console.log(
+        `[det-engine] Bespoke iron gate — manufacture_days ${dbManufactureDays === null ? 'null' : '0'} in DB, applying fallback: ${resolvedManufactureDays} days (isElectric=${isElectric})`
+      );
+    } else {
+      resolvedManufactureDays = dbManufactureDays ?? 0;
+    }
+
+    const adjustedManufactureDays = isAluminium
+      ? resolvedManufactureDays
+      : resolvedManufactureDays * complexity_multiplier;
+
+    manufactureCost = adjustedManufactureDays * fabricationRate;
     console.log(
-      `[det-engine] manufacture_days is ${dbManufactureDays === null ? 'null' : '0'} in DB for iron driveway gate — applying fallback: ${resolvedManufactureDays} days (isElectric=${isElectric})`
+      `[det-engine] Bespoke manufacture: days=${adjustedManufactureDays} × rate=£${fabricationRate} = £${Math.round(manufactureCost)}`
     );
   } else {
-    resolvedManufactureDays = dbManufactureDays ?? 0;
+    console.log('[det-engine] Named product found — manufacture cost included in product price, skipping separate charge');
   }
 
-  const adjustedManufactureDays = isAluminium
-    ? resolvedManufactureDays
-    : resolvedManufactureDays * complexity_multiplier;
-
-  const manufactureCost = adjustedManufactureDays * fabricationRate;
-  console.log(
-    `[det-engine] Manufacture: days=${adjustedManufactureDays} × rate=£${fabricationRate} = £${Math.round(manufactureCost)}`
-  );
+  // Expose adjusted manufacture days for the cost_breakdown output
+  const adjustedManufactureDays = productFound
+    ? 0
+    : (() => {
+        const dbDays = bestJobType?.manufacture_days ?? null;
+        let days: number;
+        if (!isAluminium && spec.product_type === 'iron_driveway_gates' && !dbDays) {
+          days = isElectric ? 4 : 2;
+        } else {
+          days = dbDays ?? 0;
+        }
+        return isAluminium ? days : days * complexity_multiplier;
+      })();
 
   // ── Step 4: Auto-include standard accessories ──────────────────────────────
   const accessoryCategories = isAluminium
@@ -364,7 +487,8 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   const minimum = bestJobType?.minimum_value ?? rates?.minimum_job_value ?? 0;
 
   // ── Step 6: Confidence score ───────────────────────────────────────────────
-  const confidence = calculateConfidence(spec, productFound);
+  const noDimensions = !hasDimensions;
+  const confidence = calculateConfidence(spec, productFound, noDimensions);
 
   // ── Step 7: Price range ────────────────────────────────────────────────────
   const rangeMultiplier = confidence === 'high' ? 0.1 : confidence === 'medium' ? 0.2 : 0.35;
@@ -392,6 +516,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     minimum_applied: price_low > rawLow ? minimum : null,
     job_type_matched: bestJobType?.job_type ?? null,
     product_matched: productMatchedName,
+    notes: productNotes,
   };
 
   // ── Step 9: Haiku explanation ──────────────────────────────────────────────
@@ -422,8 +547,10 @@ Job:
 - Design: ${spec.design_name ?? 'not specified'}
 - Width: ${spec.width_mm ? spec.width_mm + 'mm' : 'unknown'}
 - Height: ${spec.height_mm ? spec.height_mm + 'mm' : 'unknown'}
+- Quantity: ${quantity}
 - Confidence: ${confidence}
 - Price range: £${price_low.toLocaleString()} – £${price_high.toLocaleString()}
+${productNotes.length > 0 ? `- Pricing notes: ${productNotes.join('; ')}` : ''}
 
 Line items: product £${Math.round(productSupplyCost).toLocaleString()}, manufacture £${Math.round(manufactureCost).toLocaleString()}, install £${Math.round(installCost).toLocaleString()}, accessories £${Math.round(accessoriesTotal).toLocaleString()}
 Unknown fields: ${unknownFields.length > 0 ? unknownFields.join(', ') : 'none'}
