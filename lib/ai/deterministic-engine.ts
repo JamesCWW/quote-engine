@@ -237,6 +237,19 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   };
 
   const allJobTypes = (jobTypesRes.data ?? []) as JobTypeRow[];
+  console.log(
+    '[det-engine] All job_types rows:',
+    JSON.stringify(
+      allJobTypes.map((jt) => ({
+        job_type: jt.job_type,
+        manufacture_days: jt.manufacture_days,
+        install_days: jt.install_days,
+        engineers_required: jt.engineers_required,
+        minimum_value: jt.minimum_value,
+      }))
+    )
+  );
+
   const isAluminium = spec.material === 'aluminium';
   const isElectric = spec.is_electric === true || spec.has_automation === true;
 
@@ -269,20 +282,32 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   }
 
   console.log(
-    `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 0} install_days=${bestJobType?.install_days ?? 0} engineers=${bestJobType?.engineers_required ?? 0} min_value=£${bestJobType?.minimum_value ?? 0}`
+    `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 'null'} install_days=${bestJobType?.install_days ?? 'null'} engineers=${bestJobType?.engineers_required ?? 'null'} min_value=£${bestJobType?.minimum_value ?? 'null'}`
   );
 
   const installCost = bestJobType
     ? (bestJobType.install_days ?? 0) * installRate * (bestJobType.engineers_required ?? 1)
     : 0;
 
-  // Aluminium gates are pre-manufactured — no complexity multiplier on manufacture
-  // Iron gates are bespoke fabricated — manufacture_days × fabrication_day_rate
-  const adjustedManufactureDays = bestJobType
-    ? isAluminium
-      ? (bestJobType.manufacture_days ?? 0)
-      : (bestJobType.manufacture_days ?? 0) * complexity_multiplier
-    : 0;
+  // Resolve manufacture days — iron gates are bespoke fabricated, aluminium are pre-manufactured.
+  // If DB value is null or 0 for an iron driveway gate, fall back to known defaults:
+  //   automated: 4 days, manual: 2 days
+  const dbManufactureDays = bestJobType?.manufacture_days ?? null;
+  let resolvedManufactureDays: number;
+
+  if (!isAluminium && spec.product_type === 'iron_driveway_gates' && !dbManufactureDays) {
+    resolvedManufactureDays = isElectric ? 4 : 2;
+    console.log(
+      `[det-engine] manufacture_days is ${dbManufactureDays === null ? 'null' : '0'} in DB for iron driveway gate — applying fallback: ${resolvedManufactureDays} days (isElectric=${isElectric})`
+    );
+  } else {
+    resolvedManufactureDays = dbManufactureDays ?? 0;
+  }
+
+  const adjustedManufactureDays = isAluminium
+    ? resolvedManufactureDays
+    : resolvedManufactureDays * complexity_multiplier;
+
   const manufactureCost = adjustedManufactureDays * fabricationRate;
   console.log(
     `[det-engine] Manufacture: days=${adjustedManufactureDays} × rate=£${fabricationRate} = £${Math.round(manufactureCost)}`
