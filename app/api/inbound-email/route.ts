@@ -110,21 +110,8 @@ export async function POST(req: NextRequest) {
   if (tenant) {
     console.log(`[inbound-email] Matched tenant ${tenant.id} by inbound_email: ${recipientEmail}`);
   } else {
-    // 2. Fall back to first tenant (single-tenant / testing mode)
-    const { data: firstTenant } = await supabase
-      .from('tenants')
-      .select('id')
-      .order('created_at', { ascending: true })
-      .limit(1)
-      .single();
-
-    if (!firstTenant) {
-      console.warn('[inbound-email] No tenants found in database');
-      return NextResponse.json({ ok: true });
-    }
-
-    console.log(`[inbound-email] No inbound_email match for ${recipientEmail} — falling back to default tenant ${firstTenant.id}`);
-    tenant = firstTenant;
+    console.warn(`[inbound-email] No tenant matched inbound_email: ${recipientEmail} — discarding email`);
+    return NextResponse.json({ ok: true });
   }
 
   const tenantId = tenant.id;

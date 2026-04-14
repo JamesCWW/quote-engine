@@ -2,6 +2,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { createAdminClient } from '@/lib/supabase/admin';
+import { getTenantId } from '@/lib/tenant';
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
 
@@ -85,6 +86,9 @@ export async function POST(
   const { userId } = await auth();
   if (!userId) return NextResponse.json({ error: 'Unauthorised' }, { status: 401 });
 
+  const tenantId = await getTenantId();
+  if (!tenantId) return NextResponse.json({ error: 'Tenant not found' }, { status: 403 });
+
   const body = await req.json();
   const {
     price_low,
@@ -110,6 +114,7 @@ export async function POST(
     .from('enquiries')
     .select('raw_input, extracted_specs')
     .eq('id', params.id)
+    .eq('tenant_id', tenantId)
     .single();
 
   if (error || !enquiry) {
