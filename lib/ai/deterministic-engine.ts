@@ -123,6 +123,14 @@ function calculateConfidence(
   return 'low';
 }
 
+// Maps product_type → product_pricing.category string
+const PRODUCT_TYPE_CATEGORY: Partial<Record<ExtractedSpec['product_type'], string>> = {
+  iron_driveway_gates: 'iron_driveway_gates',
+  aluminium_driveway_gates: 'aluminium_driveway_gates',
+  iron_pedestrian_gate: 'iron_pedestrian_gates',
+  aluminium_pedestrian_gate: 'aluminium_pedestrian_gates',
+};
+
 // ── Main engine ────────────────────────────────────────────────────────────
 
 export async function runDeterministicEngine(params: QuoteParams): Promise<{
@@ -136,7 +144,41 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   // ── Step 1: Extract structured spec ───────────────────────────────────────
   const spec = await extractSpec(enquiry_text);
 
-  // Fetch master rates, job types, and (conditionally) product pricing in parallel
+  type ProductRow = {
+    design_name: string | null;
+    width_mm: number | null;
+    height_mm: number | null;
+    price_gbp: number | null;
+    category: string;
+  };
+
+  // Resolve category for this product type
+  const productCategory = PRODUCT_TYPE_CATEGORY[spec.product_type] ?? null;
+  console.log(
+    `[det-engine] product_type="${spec.product_type}" → category="${productCategory ?? 'none'}" design_name="${spec.design_name ?? 'none'}"`
+  );
+
+  // Build product pricing query:
+  //   - design_name known → filter by design name (precise match)
+  //   - no design_name but category known → fetch all products in category for closest-size match
+  //   - otherwise → no product data
+  const productQuery = spec.design_name
+    ? supabase
+        .from('product_pricing')
+        .select('design_name, width_mm, height_mm, price_gbp, category')
+        .eq('tenant_id', tenant_id)
+        .ilike('design_name', `%${spec.design_name}%`)
+        .not('price_gbp', 'is', null)
+    : productCategory
+    ? supabase
+        .from('product_pricing')
+        .select('design_name, width_mm, height_mm, price_gbp, category')
+        .eq('tenant_id', tenant_id)
+        .eq('category', productCategory)
+        .not('price_gbp', 'is', null)
+    : Promise.resolve({ data: [] as ProductRow[] });
+
+  // Fetch master rates, job types, and product pricing in parallel
   const [ratesRes, jobTypesRes, productRows] = await Promise.all([
     supabase
       .from('master_rates')
@@ -151,20 +193,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
       .select('job_type, minimum_value, manufacture_days, install_days, engineers_required')
       .eq('tenant_id', tenant_id),
 
-    spec.design_name
-      ? supabase
-          .from('product_pricing')
-          .select('design_name, width_mm, height_mm, price_gbp, category')
-          .eq('tenant_id', tenant_id)
-          .ilike('design_name', `%${spec.design_name}%`)
-          .not('price_gbp', 'is', null)
-      : Promise.resolve({ data: [] as Array<{
-          design_name: string | null;
-          width_mm: number | null;
-          height_mm: number | null;
-          price_gbp: number | null;
-          category: string;
-        }> }),
+    productQuery,
   ]);
 
   const rates = ratesRes.data;
@@ -176,13 +205,8 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   let productFound = false;
   let productMatchedName: string | null = null;
 
-  const products = (productRows.data ?? []) as Array<{
-    design_name: string | null;
-    width_mm: number | null;
-    height_mm: number | null;
-    price_gbp: number | null;
-    category: string;
-  }>;
+  const products = (productRows.data ?? []) as ProductRow[];
+  console.log(`[det-engine] Product rows fetched: ${products.length}`);
 
   if (products.length > 0) {
     const scored = products.map((p) => {
@@ -193,6 +217,9 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     });
     scored.sort((a, b) => a.dist - b.dist);
     const best = scored[0].p;
+    console.log(
+      `[det-engine] Best product match: design="${best.design_name}" w=${best.width_mm}mm h=${best.height_mm}mm price=£${best.price_gbp} dist=${scored[0].dist}mm`
+    );
     if (best.price_gbp) {
       productSupplyCost = best.price_gbp;
       productFound = true;
@@ -241,17 +268,25 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     }
   }
 
+  console.log(
+    `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 0} install_days=${bestJobType?.install_days ?? 0} engineers=${bestJobType?.engineers_required ?? 0} min_value=£${bestJobType?.minimum_value ?? 0}`
+  );
+
   const installCost = bestJobType
     ? (bestJobType.install_days ?? 0) * installRate * (bestJobType.engineers_required ?? 1)
     : 0;
 
-  // Aluminium gates are pre-manufactured — no complexity multiplier
+  // Aluminium gates are pre-manufactured — no complexity multiplier on manufacture
+  // Iron gates are bespoke fabricated — manufacture_days × fabrication_day_rate
   const adjustedManufactureDays = bestJobType
     ? isAluminium
       ? (bestJobType.manufacture_days ?? 0)
       : (bestJobType.manufacture_days ?? 0) * complexity_multiplier
     : 0;
   const manufactureCost = adjustedManufactureDays * fabricationRate;
+  console.log(
+    `[det-engine] Manufacture: days=${adjustedManufactureDays} × rate=£${fabricationRate} = £${Math.round(manufactureCost)}`
+  );
 
   // ── Step 4: Auto-include standard accessories ──────────────────────────────
   const accessoryCategories = isAluminium
