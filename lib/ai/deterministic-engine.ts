@@ -1,0 +1,419 @@
+import Anthropic from '@anthropic-ai/sdk';
+import { createAdminClient } from '@/lib/supabase/admin';
+import type { QuoteParams, QuoteResult } from './quote-engine';
+
+export type { QuoteParams };
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+export interface ExtractedSpec {
+  product_type:
+    | 'iron_driveway_gates'
+    | 'aluminium_driveway_gates'
+    | 'iron_pedestrian_gate'
+    | 'aluminium_pedestrian_gate'
+    | 'railings'
+    | 'wall_top_railings'
+    | 'handrails'
+    | 'juliette_balcony'
+    | 'unknown';
+  material: 'mild_steel' | 'aluminium' | 'unknown';
+  is_electric: boolean | null;
+  width_mm: number | null;
+  height_mm: number | null;
+  length_m: number | null;
+  design_name: string | null;
+  has_automation: boolean | null;
+  has_intercom: boolean | null;
+  installation_included: boolean | null;
+  confidence_per_field: Record<string, 'confirmed' | 'assumed' | 'unknown'>;
+}
+
+export interface DeterministicBreakdown {
+  product_supply: number;
+  manufacture: number;
+  installation: number;
+  accessories: Array<{ name: string; amount: number }>;
+  accessories_total: number;
+  subtotal: number;
+  contingency: number;
+  price_low: number;
+  price_high: number;
+  minimum_applied: number | null;
+  job_type_matched: string | null;
+  product_matched: string | null;
+}
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+// ── Step 1: Claude Haiku extraction ───────────────────────────────────────
+
+async function extractSpec(enquiryText: string): Promise<ExtractedSpec> {
+  const message = await anthropic.messages.create({
+    model: 'claude-haiku-4-5-20251001',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: `You are a metalwork quoting assistant for a UK bespoke gates and railings business.
+Extract structured data from this enquiry.
+
+Return ONLY valid JSON with this exact shape:
+{
+  "product_type": "iron_driveway_gates" | "aluminium_driveway_gates" | "iron_pedestrian_gate" | "aluminium_pedestrian_gate" | "railings" | "wall_top_railings" | "handrails" | "juliette_balcony" | "unknown",
+  "material": "mild_steel" | "aluminium" | "unknown",
+  "is_electric": true | false | null,
+  "width_mm": number | null,
+  "height_mm": number | null,
+  "length_m": number | null,
+  "design_name": string | null,
+  "has_automation": true | false | null,
+  "has_intercom": true | false | null,
+  "installation_included": true | false | null,
+  "confidence_per_field": {
+    "product_type": "confirmed" | "assumed" | "unknown",
+    "material": "confirmed" | "assumed" | "unknown",
+    "is_electric": "confirmed" | "assumed" | "unknown",
+    "width_mm": "confirmed" | "assumed" | "unknown",
+    "height_mm": "confirmed" | "assumed" | "unknown",
+    "length_m": "confirmed" | "assumed" | "unknown",
+    "design_name": "confirmed" | "assumed" | "unknown",
+    "has_automation": "confirmed" | "assumed" | "unknown",
+    "has_intercom": "confirmed" | "assumed" | "unknown",
+    "installation_included": "confirmed" | "assumed" | "unknown"
+  }
+}
+
+Confidence rules:
+- "confirmed": explicitly stated by the customer
+- "assumed": logically inferred (e.g. "electric gates" → has_automation = true, assumed)
+- "unknown": not mentioned, cannot be inferred
+
+Conversion rules:
+- width/height: always output in millimetres
+- If given in metres: multiply by 1000. In cm: multiply by 10. In feet: multiply by 304.8.
+- design_name: gate design names like Norfolk, Surrey, Hertfordshire, Essex, etc.
+- installation_included: default assumed true unless customer says collect/supply-only
+
+Enquiry text:
+${enquiryText}`,
+      },
+    ],
+  });
+
+  const content = message.content[0];
+  if (content.type !== 'text') throw new Error('[det-engine] Unexpected Haiku response type');
+  const match = content.text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error('[det-engine] No JSON in Haiku extraction response');
+  return JSON.parse(match[0]) as ExtractedSpec;
+}
+
+// ── Step 6: Deterministic confidence ──────────────────────────────────────
+
+function calculateConfidence(
+  spec: ExtractedSpec,
+  productFound: boolean
+): 'low' | 'medium' | 'high' {
+  const values = Object.values(spec.confidence_per_field);
+  const confirmed = values.filter((v) => v === 'confirmed').length;
+  const ratio = confirmed / values.length;
+
+  if (ratio > 0.8 && productFound) return 'high';
+  if (ratio >= 0.5 || productFound) return 'medium';
+  return 'low';
+}
+
+// ── Main engine ────────────────────────────────────────────────────────────
+
+export async function runDeterministicEngine(params: QuoteParams): Promise<{
+  result: QuoteResult;
+  spec: ExtractedSpec;
+  breakdown: DeterministicBreakdown;
+}> {
+  const { enquiry_text, tenant_id, complexity_multiplier = 1.0 } = params;
+  const supabase = createAdminClient();
+
+  // ── Step 1: Extract structured spec ───────────────────────────────────────
+  const spec = await extractSpec(enquiry_text);
+
+  // Fetch master rates, job types, and (conditionally) product pricing in parallel
+  const [ratesRes, jobTypesRes, productRows] = await Promise.all([
+    supabase
+      .from('master_rates')
+      .select(
+        'fabrication_day_rate, installation_day_rate, consumer_unit_connection, minimum_job_value'
+      )
+      .eq('tenant_id', tenant_id)
+      .single(),
+
+    supabase
+      .from('job_types')
+      .select('job_type, minimum_value, manufacture_days, install_days, engineers_required')
+      .eq('tenant_id', tenant_id),
+
+    spec.design_name
+      ? supabase
+          .from('product_pricing')
+          .select('design_name, width_mm, height_mm, price_gbp, category')
+          .eq('tenant_id', tenant_id)
+          .ilike('design_name', `%${spec.design_name}%`)
+          .not('price_gbp', 'is', null)
+      : Promise.resolve({ data: [] as Array<{
+          design_name: string | null;
+          width_mm: number | null;
+          height_mm: number | null;
+          price_gbp: number | null;
+          category: string;
+        }> }),
+  ]);
+
+  const rates = ratesRes.data;
+  const fabricationRate = rates?.fabrication_day_rate ?? 507;
+  const installRate = rates?.installation_day_rate ?? 523.84;
+
+  // ── Step 2: Product lookup — find closest dimensional match ───────────────
+  let productSupplyCost = 0;
+  let productFound = false;
+  let productMatchedName: string | null = null;
+
+  const products = (productRows.data ?? []) as Array<{
+    design_name: string | null;
+    width_mm: number | null;
+    height_mm: number | null;
+    price_gbp: number | null;
+    category: string;
+  }>;
+
+  if (products.length > 0) {
+    const scored = products.map((p) => {
+      let dist = 0;
+      if (spec.width_mm && p.width_mm) dist += Math.abs(spec.width_mm - p.width_mm);
+      if (spec.height_mm && p.height_mm) dist += Math.abs(spec.height_mm - p.height_mm);
+      return { p, dist };
+    });
+    scored.sort((a, b) => a.dist - b.dist);
+    const best = scored[0].p;
+    if (best.price_gbp) {
+      productSupplyCost = best.price_gbp;
+      productFound = true;
+      productMatchedName = best.design_name ?? spec.design_name;
+    }
+  }
+
+  // ── Step 3: Job type matching ─────────────────────────────────────────────
+  type JobTypeRow = {
+    job_type: string;
+    minimum_value: number | null;
+    manufacture_days: number | null;
+    install_days: number | null;
+    engineers_required: number | null;
+  };
+
+  const allJobTypes = (jobTypesRes.data ?? []) as JobTypeRow[];
+  const isAluminium = spec.material === 'aluminium';
+  const isElectric = spec.is_electric === true || spec.has_automation === true;
+
+  let bestJobType: JobTypeRow | null = null;
+  let bestScore = 0;
+
+  for (const jt of allJobTypes) {
+    const jtLower = jt.job_type.toLowerCase();
+    let score = 0;
+
+    if (isAluminium && /alumin/.test(jtLower)) score += 3;
+    if (!isAluminium && /\b(iron|mild.?steel)\b/.test(jtLower)) score += 3;
+    if (isElectric && /electric|automat/.test(jtLower)) score += 3;
+    if (!isElectric && spec.is_electric !== null && !/electric|automat/.test(jtLower)) score += 2;
+    if (spec.product_type.includes('pedestrian') && /pedestrian/.test(jtLower)) score += 3;
+    if (
+      (spec.product_type.includes('driveway') || spec.product_type.includes('gates')) &&
+      /driveway/.test(jtLower)
+    )
+      score += 2;
+    if (spec.product_type.includes('railing') && /railing/.test(jtLower)) score += 3;
+    if (spec.product_type.includes('handrail') && /handrail/.test(jtLower)) score += 3;
+    if (spec.product_type.includes('juliette') && /juliette/.test(jtLower)) score += 3;
+    if (spec.product_type.includes('wall_top') && /wall.?top/.test(jtLower)) score += 3;
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestJobType = jt;
+    }
+  }
+
+  const installCost = bestJobType
+    ? (bestJobType.install_days ?? 0) * installRate * (bestJobType.engineers_required ?? 1)
+    : 0;
+
+  // Aluminium gates are pre-manufactured — no complexity multiplier
+  const adjustedManufactureDays = bestJobType
+    ? isAluminium
+      ? (bestJobType.manufacture_days ?? 0)
+      : (bestJobType.manufacture_days ?? 0) * complexity_multiplier
+    : 0;
+  const manufactureCost = adjustedManufactureDays * fabricationRate;
+
+  // ── Step 4: Auto-include standard accessories ──────────────────────────────
+  const accessoryCategories = isAluminium
+    ? ['aluminium_accessories', 'automation']
+    : ['iron_accessories', 'automation'];
+
+  const { data: allAcc } = await supabase
+    .from('accessories_pricing')
+    .select('item_name, helions_price, category')
+    .eq('tenant_id', tenant_id)
+    .in('category', accessoryCategories)
+    .not('helions_price', 'is', null);
+
+  type AccRow = { item_name: string; helions_price: number; category: string };
+  const acc = (allAcc ?? []) as AccRow[];
+  const findAcc = (pattern: RegExp) => acc.find((a) => pattern.test(a.item_name));
+  const accessories: Array<{ name: string; amount: number }> = [];
+
+  const isGateProduct =
+    spec.product_type.includes('gate') ||
+    spec.product_type.includes('driveway') ||
+    spec.product_type.includes('pedestrian');
+
+  if (isGateProduct) {
+    const post = findAcc(/driveway.*post.*large|large.*post.*driveway|gate.*post|post.*driveway/i);
+    if (post) accessories.push({ name: `Gate posts × 2`, amount: post.helions_price * 2 });
+
+    if (isElectric) {
+      const fob = findAcc(/remote.*fob|fob/i);
+      if (fob) accessories.push({ name: `Remote fobs × 2`, amount: fob.helions_price * 2 });
+
+      const motorKit = findAcc(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i);
+      if (motorKit) accessories.push({ name: motorKit.item_name, amount: motorKit.helions_price });
+
+      const photocell = findAcc(/photocell|dir\b/i);
+      if (photocell) accessories.push({ name: photocell.item_name, amount: photocell.helions_price });
+
+      const shoes = findAcc(/underground.*shoes|shoes.*underground/i);
+      if (shoes) accessories.push({ name: shoes.item_name, amount: shoes.helions_price });
+
+      if (rates?.consumer_unit_connection) {
+        accessories.push({ name: 'Consumer unit connection', amount: rates.consumer_unit_connection });
+      }
+    }
+  }
+
+  const accessoriesTotal = accessories.reduce((sum, a) => sum + a.amount, 0);
+
+  // ── Step 5: Minimum value ──────────────────────────────────────────────────
+  const minimum = bestJobType?.minimum_value ?? rates?.minimum_job_value ?? 0;
+
+  // ── Step 6: Confidence score ───────────────────────────────────────────────
+  const confidence = calculateConfidence(spec, productFound);
+
+  // ── Step 7: Price range ────────────────────────────────────────────────────
+  const rangeMultiplier = confidence === 'high' ? 0.1 : confidence === 'medium' ? 0.2 : 0.35;
+
+  const basePrice = productSupplyCost + manufactureCost + installCost + accessoriesTotal;
+  const contingency = Math.round(basePrice * 0.05);
+  const total = basePrice + contingency;
+
+  const rawLow = Math.round(total * (1 - rangeMultiplier));
+  const rawHigh = Math.round(total * (1 + rangeMultiplier));
+  const price_low = Math.max(minimum, rawLow);
+  const price_high = Math.max(price_low + 1, rawHigh);
+
+  // ── Step 8: Cost breakdown ─────────────────────────────────────────────────
+  const breakdown: DeterministicBreakdown = {
+    product_supply: Math.round(productSupplyCost),
+    manufacture: Math.round(manufactureCost),
+    installation: Math.round(installCost),
+    accessories,
+    accessories_total: Math.round(accessoriesTotal),
+    subtotal: Math.round(basePrice),
+    contingency,
+    price_low,
+    price_high,
+    minimum_applied: price_low > rawLow ? minimum : null,
+    job_type_matched: bestJobType?.job_type ?? null,
+    product_matched: productMatchedName,
+  };
+
+  // ── Step 9: Haiku explanation ──────────────────────────────────────────────
+  const unknownFields = Object.entries(spec.confidence_per_field)
+    .filter(([, v]) => v === 'unknown')
+    .map(([k]) => k);
+
+  let reasoning =
+    `Deterministic estimate: product supply £${Math.round(productSupplyCost).toLocaleString()}, ` +
+    `manufacture £${Math.round(manufactureCost).toLocaleString()}, ` +
+    `installation £${Math.round(installCost).toLocaleString()}, ` +
+    `accessories £${Math.round(accessoriesTotal).toLocaleString()}.`;
+  let missing_info: string[] = unknownFields.map((f) => `Please confirm: ${f.replace(/_/g, ' ')}`);
+
+  try {
+    const explanationMsg = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 512,
+      messages: [
+        {
+          role: 'user',
+          content: `You are a UK metalwork quoting assistant. Write a short explanation of this estimate and any clarifying questions needed.
+
+Job:
+- Product: ${spec.product_type.replace(/_/g, ' ')}
+- Material: ${spec.material.replace(/_/g, ' ')}
+- Automated: ${isElectric ? 'yes' : spec.is_electric === null ? 'unknown' : 'no'}
+- Design: ${spec.design_name ?? 'not specified'}
+- Width: ${spec.width_mm ? spec.width_mm + 'mm' : 'unknown'}
+- Height: ${spec.height_mm ? spec.height_mm + 'mm' : 'unknown'}
+- Confidence: ${confidence}
+- Price range: £${price_low.toLocaleString()} – £${price_high.toLocaleString()}
+
+Line items: product £${Math.round(productSupplyCost).toLocaleString()}, manufacture £${Math.round(manufactureCost).toLocaleString()}, install £${Math.round(installCost).toLocaleString()}, accessories £${Math.round(accessoriesTotal).toLocaleString()}
+Unknown fields: ${unknownFields.length > 0 ? unknownFields.join(', ') : 'none'}
+
+Return JSON only:
+{"reasoning": "2-3 sentence plain English explanation", "missing_info": ["question for each unknown field"]}`,
+        },
+      ],
+    });
+
+    const ec = explanationMsg.content[0];
+    if (ec.type === 'text') {
+      const m = ec.text.match(/\{[\s\S]*\}/);
+      if (m) {
+        const r = JSON.parse(m[0]) as { reasoning?: string; missing_info?: string[] };
+        if (r.reasoning) reasoning = r.reasoning;
+        if (r.missing_info) missing_info = r.missing_info;
+      }
+    }
+  } catch (err) {
+    console.error('[det-engine] Explanation step failed (non-fatal):', err);
+  }
+
+  const result: QuoteResult = {
+    price_low,
+    price_high,
+    confidence,
+    reasoning,
+    missing_info,
+    product_type: spec.product_type,
+    material: spec.material,
+    quote_mode: productFound ? 'precise' : 'rough',
+    similar_quotes: [],
+    cost_breakdown: {
+      material_cost: Math.round(productSupplyCost),
+      manufacture_cost: Math.round(manufactureCost),
+      manufacture_days: adjustedManufactureDays,
+      install_cost: Math.round(installCost),
+      install_days: bestJobType?.install_days ?? 0,
+      engineers: bestJobType?.engineers_required ?? 0,
+      finishing_cost: 0,
+      subtotal: Math.round(basePrice),
+      contingency,
+    },
+  };
+
+  return { result, spec, breakdown };
+}
+
+export async function generateDeterministicQuote(params: QuoteParams): Promise<QuoteResult> {
+  const { result } = await runDeterministicEngine(params);
+  return result;
+}

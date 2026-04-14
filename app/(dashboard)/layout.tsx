@@ -39,6 +39,9 @@ export default async function DashboardLayout({
           <Link href="/dashboard/pricing" className="text-sm text-gray-500 hover:text-gray-900 transition-colors">
             Pricing
           </Link>
+          <Link href="/dashboard/calibration" className="text-sm text-gray-500 hover:text-gray-900 transition-colors">
+            Calibration
+          </Link>
         </div>
       </nav>
       {children}

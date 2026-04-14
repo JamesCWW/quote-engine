@@ -52,14 +52,45 @@ export interface QuoteResult {
   job_components?: JobComponent[];
 }
 
-export async function generateQuote(params: {
+export type QuoteParams = {
   enquiry_text: string;
   tenant_id: string;
   assumptions?: Array<{ label: string; value: string }>;
   complexity_multiplier?: number;
   image_urls?: string[];
   railing_dims?: RailingDims;
-}): Promise<QuoteResult> {
+};
+
+// ---------------------------------------------------------------------------
+// Engine router — checks tenant's engine_version and dispatches accordingly.
+// Add the is_internal bypass here once Stripe gating is wired (Task 9).
+// ---------------------------------------------------------------------------
+export async function generateQuote(params: QuoteParams): Promise<QuoteResult> {
+  const supabase = createAdminClient();
+  const { data: tenant } = await supabase
+    .from('tenants')
+    .select('engine_version')
+    .eq('id', params.tenant_id)
+    .single();
+
+  if (tenant?.engine_version === 'deterministic') {
+    return generateDeterministicQuote(params);
+  }
+  return generateLegacyQuote(params);
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic engine — delegates to lib/ai/deterministic-engine.ts
+// ---------------------------------------------------------------------------
+async function generateDeterministicQuote(params: QuoteParams): Promise<QuoteResult> {
+  const { generateDeterministicQuote: run } = await import('@/lib/ai/deterministic-engine');
+  return run(params);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy AI engine (original implementation — do not modify).
+// ---------------------------------------------------------------------------
+async function generateLegacyQuote(params: QuoteParams): Promise<QuoteResult> {
   const {
     enquiry_text,
     tenant_id,
