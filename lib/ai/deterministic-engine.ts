@@ -235,25 +235,42 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     `[det-engine] product_type="${spec.product_type}" → category="${productCategory ?? 'none'}" design_name="${spec.design_name ?? 'none'}" quantity=${spec.quantity ?? 1}`
   );
 
+  // Determine whether this is a single-item request with known dimensions.
+  // When true, we push .gte() + .order() + .limit(1) into Supabase to return
+  // only the smallest fitting product, avoiding a full 185-row fetch.
+  const hasMultipleItemsEarly = !!(spec.items && spec.items.length > 1);
+  const hasSingleDimensions = !hasMultipleItemsEarly && !!(spec.width_mm || spec.height_mm);
+
   // Build product pricing query:
-  //   - design_name known → filter by design name (precise match)
-  //   - no design_name but category known → fetch all products in category for median/closest-size match
-  //   - otherwise → no product data
-  const productQuery = spec.design_name
-    ? supabase
-        .from('product_pricing')
-        .select('design_name, width_mm, height_mm, price_gbp, category')
-        .eq('tenant_id', tenant_id)
-        .ilike('design_name', `%${spec.design_name}%`)
-        .not('price_gbp', 'is', null)
-    : productCategory
-    ? supabase
-        .from('product_pricing')
-        .select('design_name, width_mm, height_mm, price_gbp, category')
-        .eq('tenant_id', tenant_id)
-        .eq('category', productCategory)
-        .not('price_gbp', 'is', null)
-    : Promise.resolve({ data: [] as ProductRow[] });
+  //   - single dimensions known → push gte filter into Supabase, return limit(1)
+  //   - multiple items → fetch all in category (in-memory sizing per item)
+  //   - no dimensions → fetch all in category for median price
+  //   - no category → no product data
+  const productQuery = (() => {
+    if (!productCategory) return Promise.resolve({ data: [] as ProductRow[] });
+
+    const base = supabase
+      .from('product_pricing')
+      .select('design_name, width_mm, height_mm, price_gbp, category')
+      .eq('tenant_id', tenant_id)
+      .not('price_gbp', 'is', null)
+      .eq('category', productCategory);
+
+    const withDesign = spec.design_name
+      ? base.ilike('design_name', `%${spec.design_name}%`)
+      : base;
+
+    if (!hasSingleDimensions) return withDesign;
+
+    // Push size filter into Supabase — return only the smallest fitting product
+    let sized = withDesign;
+    if (spec.width_mm) sized = sized.gte('width_mm', spec.width_mm);
+    if (spec.height_mm) sized = sized.gte('height_mm', spec.height_mm);
+    return sized
+      .order('width_mm', { ascending: true })
+      .order('height_mm', { ascending: true })
+      .limit(1);
+  })();
 
   // Fetch master rates, job types, and product pricing in parallel
   const [ratesRes, jobTypesRes, productRows] = await Promise.all([
@@ -386,7 +403,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   );
   // DEBUG: product lookup diagnostics
   console.log('PRODUCT QUERY:', `width >= ${spec.width_mm}, height >= ${spec.height_mm}`);
-  console.log('PRODUCT FOUND:', productMatchedName, `£${productSupplyCost}`);
+  console.log('PRODUCT FOUND:', products[0]?.design_name, products[0]?.width_mm, products[0]?.height_mm, products[0]?.price_gbp);
 
   // ── Step 3: Job type matching ─────────────────────────────────────────────
   type JobTypeRow = {
@@ -447,7 +464,9 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   if (spec.product_type === 'aluminium_driveway_gates') {
     const isBrickToBrick = /brick.?to.?brick|no posts/i.test(enquiry_text);
     if (!isBrickToBrick) {
-      const concreteInPosts = allJobTypes.find((jt) => /concrete.?in.?posts?/i.test(jt.job_type));
+      const concreteInPosts = allJobTypes.find(
+        (jt) => /concrete.?in.?posts?/i.test(jt.job_type) && /driveway/i.test(jt.job_type)
+      );
       if (concreteInPosts) {
         console.log(
           `[det-engine] Aluminium driveway gate — overriding job type to "${concreteInPosts.job_type}" (posts assumed unless "brick to brick" specified)`
