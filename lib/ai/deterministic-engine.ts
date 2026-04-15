@@ -28,6 +28,7 @@ export interface ExtractedSpec {
   installation_included: boolean | null;
   quantity: number | null;
   items: Array<{ width_mm: number | null; height_mm: number | null }> | null;
+  has_posts: boolean | null;
   confidence_per_field: Record<string, 'confirmed' | 'assumed' | 'unknown'>;
 }
 
@@ -75,6 +76,7 @@ Return ONLY valid JSON with this exact shape:
   "installation_included": true | false | null,
   "quantity": number | null,
   "items": [{"width_mm": number | null, "height_mm": number | null}] | null,
+  "has_posts": true | false | null,
   "confidence_per_field": {
     "product_type": "confirmed" | "assumed" | "unknown",
     "material": "confirmed" | "assumed" | "unknown",
@@ -85,7 +87,8 @@ Return ONLY valid JSON with this exact shape:
     "design_name": "confirmed" | "assumed" | "unknown",
     "has_automation": "confirmed" | "assumed" | "unknown",
     "has_intercom": "confirmed" | "assumed" | "unknown",
-    "installation_included": "confirmed" | "assumed" | "unknown"
+    "installation_included": "confirmed" | "assumed" | "unknown",
+    "has_posts": "confirmed" | "assumed" | "unknown"
   }
 }
 
@@ -101,6 +104,7 @@ Conversion rules:
 - installation_included: default assumed true unless customer says collect/supply-only
 - quantity: number of gates/units requested. Set to 2 if "pair", "two", "both" mentioned. Default null (treated as 1).
 - items: if multiple sets of dimensions are listed, output each as an object. If only one set (or none), set to null. width_mm and height_mm in each item use the same mm conversion rules.
+- has_posts: true if the enquiry mentions posts, gate posts, or concrete-in posts. false if "brick to brick" is mentioned (no posts needed). null if not mentioned.
 
 Enquiry text:
 ${enquiryText}`,
