@@ -380,6 +380,9 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   console.log(
     `[det-engine] Product supply: £${Math.round(productSupplyCost)} productFound=${productFound} notes=${JSON.stringify(productNotes)}`
   );
+  // DEBUG: product lookup diagnostics
+  console.log('PRODUCT QUERY:', `width >= ${spec.width_mm}, height >= ${spec.height_mm}`);
+  console.log('PRODUCT FOUND:', productMatchedName, `£${productSupplyCost}`);
 
   // ── Step 3: Job type matching ─────────────────────────────────────────────
   type JobTypeRow = {
@@ -455,6 +458,11 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   console.log(
     `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 'null'} install_days=${bestJobType?.install_days ?? 'null'} engineers=${bestJobType?.engineers_required ?? 'null'} min_value=£${bestJobType?.minimum_value ?? 'null'}`
   );
+  // DEBUG: job type diagnostics
+  console.log('POSTS DETECTED:', (spec as Record<string, unknown>).has_posts);
+  console.log('JOB TYPE MATCHED:', bestJobType?.job_type);
+  console.log('INSTALL DAYS:', bestJobType?.install_days);
+  console.log('ENGINEERS:', bestJobType?.engineers_required);
 
   // Multi-pedestrian gate (qty >= 2): 1 day, 2 engineers, no quantity multiplication
   const isMultiPedestrianGate = quantity >= 2 && spec.product_type.includes('pedestrian');
@@ -574,6 +582,8 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
           customSizeItems[0];
         const customSizeAmount = customSizeRow?.helions_price ?? 140;
         console.log(`[det-engine] Driveway gate custom size fee: "${customSizeRow?.item_name ?? 'fallback'}" £${customSizeAmount}`);
+        // DEBUG: custom size item diagnostics
+        console.log('CUSTOM SIZE ITEM:', customSizeRow?.item_name, customSizeRow?.helions_price);
         accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
       } else if (isPedestrianGate) {
         // PG prefix = pedestrian gate row
@@ -584,6 +594,8 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
           customSizeItems[0];
         const customSizeAmount = customSizeRow?.helions_price ?? 70;
         console.log(`[det-engine] Pedestrian gate custom size fee: "${customSizeRow?.item_name ?? 'fallback'}" £${customSizeAmount}`);
+        // DEBUG: custom size item diagnostics
+        console.log('CUSTOM SIZE ITEM:', customSizeRow?.item_name, customSizeRow?.helions_price);
         accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
       }
     }
