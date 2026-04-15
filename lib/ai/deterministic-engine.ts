@@ -162,6 +162,7 @@ function getMedianProduct(products: ProductRow[]): ProductRow | null {
 /**
  * Finds the smallest product where width_mm >= requested_width AND height_mm >= requested_height.
  * If no product meets both constraints, returns the largest available product.
+ * Products with null dimensions are excluded when a dimension requirement is specified.
  */
 function findSmallestFittingProduct(
   products: ProductRow[],
@@ -170,20 +171,34 @@ function findSmallestFittingProduct(
 ): ProductRow | null {
   if (products.length === 0) return null;
 
-  // Filter to products that are at least as large as requested in both dimensions
+  console.log(
+    `[det-engine] findSmallestFittingProduct: requested ${width_mm ?? '?'}mm × ${height_mm ?? '?'}mm, ` +
+    `candidates: ${JSON.stringify(products.map(p => `${p.width_mm ?? 'null'}×${p.height_mm ?? 'null'} £${p.price_gbp ?? 'null'}`))}`
+  );
+
+  // Filter to products that are at least as large as requested in both dimensions.
+  // Exclude products with null dimensions when a dimension requirement is specified
+  // (null-dimension rows have area=0 and would otherwise sort first).
   const fitting = products.filter((p) => {
-    const widthOk = !width_mm || !p.width_mm || p.width_mm >= width_mm;
-    const heightOk = !height_mm || !p.height_mm || p.height_mm >= height_mm;
+    if (width_mm && !p.width_mm) return false;
+    if (height_mm && !p.height_mm) return false;
+    const widthOk = !width_mm || p.width_mm! >= width_mm;
+    const heightOk = !height_mm || p.height_mm! >= height_mm;
     return widthOk && heightOk;
   });
 
+  console.log(
+    `[det-engine] findSmallestFittingProduct: ${fitting.length} fitting product(s) found: ` +
+    `${JSON.stringify(fitting.map(p => `${p.width_mm ?? 'null'}×${p.height_mm ?? 'null'} £${p.price_gbp ?? 'null'}`))}`
+  );
+
   if (fitting.length > 0) {
-    // Pick smallest fitting product (by area)
+    // Pick smallest fitting product — sort by width ASC, then height ASC (matches SQL ORDER BY)
     const sorted = [...fitting].sort((a, b) => {
-      const aArea = (a.width_mm ?? 0) * (a.height_mm ?? 0);
-      const bArea = (b.width_mm ?? 0) * (b.height_mm ?? 0);
-      return aArea - bArea;
+      if ((a.width_mm ?? 0) !== (b.width_mm ?? 0)) return (a.width_mm ?? 0) - (b.width_mm ?? 0);
+      return (a.height_mm ?? 0) - (b.height_mm ?? 0);
     });
+    console.log(`[det-engine] findSmallestFittingProduct: selected ${sorted[0].width_mm ?? '?'}mm × ${sorted[0].height_mm ?? '?'}mm £${sorted[0].price_gbp ?? '?'}`);
     return sorted[0];
   }
 
@@ -193,6 +208,7 @@ function findSmallestFittingProduct(
     const bArea = (b.width_mm ?? 0) * (b.height_mm ?? 0);
     return bArea - aArea;
   });
+  console.log(`[det-engine] findSmallestFittingProduct: no fitting product — using largest available ${sorted[0].width_mm ?? '?'}mm × ${sorted[0].height_mm ?? '?'}mm`);
   return sorted[0];
 }
 
@@ -419,6 +435,23 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     }
   }
 
+  // Special override: aluminium driveway gates default to "concrete in posts" unless enquiry
+  // explicitly says "brick to brick" or "no posts".
+  if (spec.product_type === 'aluminium_driveway_gates') {
+    const isBrickToBrick = /brick.?to.?brick|no posts/i.test(enquiry_text);
+    if (!isBrickToBrick) {
+      const concreteInPosts = allJobTypes.find((jt) => /concrete.?in.?posts?/i.test(jt.job_type));
+      if (concreteInPosts) {
+        console.log(
+          `[det-engine] Aluminium driveway gate — overriding job type to "${concreteInPosts.job_type}" (posts assumed unless "brick to brick" specified)`
+        );
+        bestJobType = concreteInPosts;
+      }
+    } else {
+      console.log(`[det-engine] Aluminium driveway gate — "brick to brick" detected, keeping scored job type`);
+    }
+  }
+
   console.log(
     `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 'null'} install_days=${bestJobType?.install_days ?? 'null'} engineers=${bestJobType?.engineers_required ?? 'null'} min_value=£${bestJobType?.minimum_value ?? 'null'}`
   );
@@ -526,25 +559,31 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     }
 
     // Aluminium gates: add custom size fee
+    // item_name prefix: "DG" = driveway gate (£140), "PG" = pedestrian gate (£70)
     if (isAluminium) {
       const customSizeItems = acc.filter(
         (a) => /custom.?size/i.test(a.item_name) && a.category === 'aluminium_accessories'
       );
+      console.log(`[det-engine] Custom size candidates: ${JSON.stringify(customSizeItems.map(a => `${a.item_name} £${a.helions_price}`))}`);
       if (isDrivewayGate) {
-        // Prefer a row whose name contains 'driveway', otherwise any custom size row; fallback £140
+        // DG prefix = driveway gate row
         const customSizeRow =
+          customSizeItems.find((a) => /^DG/i.test(a.item_name)) ??
           customSizeItems.find((a) => /driveway/i.test(a.item_name)) ??
-          customSizeItems.find((a) => !/pedestrian/i.test(a.item_name)) ??
+          customSizeItems.find((a) => !/^PG/i.test(a.item_name)) ??
           customSizeItems[0];
         const customSizeAmount = customSizeRow?.helions_price ?? 140;
+        console.log(`[det-engine] Driveway gate custom size fee: "${customSizeRow?.item_name ?? 'fallback'}" £${customSizeAmount}`);
         accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
       } else if (isPedestrianGate) {
-        // Prefer a row whose name contains 'pedestrian', otherwise any custom size row; fallback £70
+        // PG prefix = pedestrian gate row
         const customSizeRow =
+          customSizeItems.find((a) => /^PG/i.test(a.item_name)) ??
           customSizeItems.find((a) => /pedestrian/i.test(a.item_name)) ??
-          customSizeItems.find((a) => !/driveway/i.test(a.item_name)) ??
+          customSizeItems.find((a) => !/^DG/i.test(a.item_name)) ??
           customSizeItems[0];
         const customSizeAmount = customSizeRow?.helions_price ?? 70;
+        console.log(`[det-engine] Pedestrian gate custom size fee: "${customSizeRow?.item_name ?? 'fallback'}" £${customSizeAmount}`);
         accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
       }
     }
