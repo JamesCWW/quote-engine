@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
   const recipientEmail = to[0];
 
   // 1. Try to match by inbound_email address
-  let { data: tenant } = await supabase
+  const { data: tenant } = await supabase
     .from('tenants')
     .select('id')
     .eq('inbound_email', recipientEmail)
