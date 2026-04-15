@@ -459,7 +459,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     `[det-engine] Job type matched: "${bestJobType?.job_type ?? 'none'}" manufacture_days=${bestJobType?.manufacture_days ?? 'null'} install_days=${bestJobType?.install_days ?? 'null'} engineers=${bestJobType?.engineers_required ?? 'null'} min_value=£${bestJobType?.minimum_value ?? 'null'}`
   );
   // DEBUG: job type diagnostics
-  console.log('POSTS DETECTED:', (spec as Record<string, unknown>).has_posts);
+  console.log('POSTS DETECTED:', spec.has_posts);
   console.log('JOB TYPE MATCHED:', bestJobType?.job_type);
   console.log('INSTALL DAYS:', bestJobType?.install_days);
   console.log('ENGINEERS:', bestJobType?.engineers_required);
