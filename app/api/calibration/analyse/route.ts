@@ -20,6 +20,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'actual_price must be a positive number' }, { status: 400 });
   }
 
+  console.log('CALIBRATION: calling runDeterministicEngine');
   const { result, spec, breakdown } = await runDeterministicEngine({
     enquiry_text,
     tenant_id,

@@ -352,10 +352,12 @@ function onGenerateFromSummary(event) {
   }
 
   try {
+    // Pass the summary text directly as enquiry_text — no subject prefix.
+    // This matches what the calibration tool does and avoids the subject
+    // line confusing the extraction step.
     var result = apiPost_('/api/gmail-addon/quote', {
-      email_subject: subject,
-      email_body:    summaryText,
-      tenant_id:     p.tenantId,
+      email_body: summaryText,
+      tenant_id:  p.tenantId,
     });
 
     if (result.code !== 200) {
@@ -590,9 +592,8 @@ function onGenerateCustomEstimate(event) {
 
   try {
     var result = apiPost_('/api/gmail-addon/quote', {
-      email_subject: subject,
-      email_body:    customText,
-      tenant_id:     p.tenantId,
+      email_body: customText,
+      tenant_id:  p.tenantId,
     });
 
     if (result.code !== 200) {
@@ -620,6 +621,70 @@ function onGenerateCustomEstimate(event) {
       .setNavigation(CardService.newNavigation()
         .popCard()
         .updateCard(buildResultCard_(q, threadCount, messageId, customText)))
+      .build();
+
+  } catch (e) {
+    return errorResponse_('Unexpected error: ' + e.message);
+  }
+}
+
+/**
+ * Edit & Recalculate — pushes an editable card pre-filled with the
+ * summary that produced the current estimate.
+ */
+function onEditAndRecalculate(event) {
+  var summaryText = cacheGet_('summary') || '';
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation()
+      .pushCard(buildRecalculateCard_(summaryText)))
+    .build();
+}
+
+/**
+ * Recalculate — re-runs the quote from the edited summary text
+ * without re-analysing the email.
+ */
+function onRecalculate(event) {
+  var f           = event.formInput || {};
+  var summaryText = (f.recalc_summary || '').trim();
+  var threadCount = cacheGet_('threadCount') || 1;
+  var messageId   = cacheGet_('messageId')   || '';
+  var p           = getProps_();
+
+  if (!summaryText) {
+    return errorResponse_('Summary text is empty — please enter a description.');
+  }
+  if (!p.apiKey || !p.tenantId) {
+    return errorResponse_('Script Properties not configured. Set ADDON_API_KEY, TENANT_ID, API_BASE_URL.');
+  }
+
+  cacheSet_('summary', summaryText);
+
+  try {
+    var result = apiPost_('/api/gmail-addon/quote', {
+      email_body: summaryText,
+      tenant_id:  p.tenantId,
+    });
+
+    if (result.code !== 200) {
+      return errorResponse_('API error ' + result.code + ': ' + (result.body.error || 'Unknown'));
+    }
+
+    var q = result.body;
+    cacheSet_('quote', q);
+    cache_().remove('assumptions');
+    cache_().remove('suggestedComplexity');
+    if (q.job_components && q.job_components.length > 0) {
+      cacheSet_('jobComponents', q.job_components);
+    } else {
+      cache_().remove('jobComponents');
+    }
+
+    // Pop the recalculate card then update the result card underneath
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation()
+        .popCard()
+        .updateCard(buildResultCard_(q, threadCount, messageId, summaryText)))
       .build();
 
   } catch (e) {
@@ -832,6 +897,39 @@ function buildSummaryEditCard_(summary) {
     .build();
 }
 
+/** Edit & Recalculate card — pre-filled editable summary, Recalculate button. */
+function buildRecalculateCard_(summaryText) {
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Edit & Recalculate'))
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph()
+          .setText('Edit the project summary below to correct any details, then tap Recalculate.'))
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName('recalc_summary')
+            .setTitle('Project summary')
+            .setValue(summaryText || '')
+            .setMultiline(true)
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextButton()
+            .setText('🔄  Recalculate')
+            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setOnClickAction(CardService.newAction().setFunctionName('onRecalculate'))
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('← Back')
+            .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+        )
+    )
+    .build();
+}
+
 /** Result card — price estimate with breakdown and actions. */
 function buildResultCard_(q, threadCount, messageId, summaryText) {
   var card = CardService.newCardBuilder()
@@ -872,7 +970,7 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
   }
   card.addSection(priceSection);
 
-  // ── 2. Primary CTA: Generate Email ───────────────────────────────────────
+  // ── 2. Primary CTA: Generate Email + Edit & Recalculate ──────────────────
   card.addSection(
     CardService.newCardSection()
       .addWidget(
@@ -883,6 +981,14 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
             CardService.newAction()
               .setFunctionName('onGenerateEmailResponse')
               .setParameters({ tone: 'friendly' })
+          )
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('✏️  Edit Summary & Recalculate')
+          .setOnClickAction(
+            CardService.newAction()
+              .setFunctionName('onEditAndRecalculate')
           )
       )
   );

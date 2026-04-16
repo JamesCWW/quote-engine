@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     const enquiry_text = email_subject ? `Subject: ${email_subject}\n\n${email_body}` : email_body;
 
     console.log('[gmail-addon/quote] Step 3: Generating quote');
+    console.log('ADDON: calling generateQuote');
     const result = await generateQuote({
       enquiry_text,
       tenant_id,
