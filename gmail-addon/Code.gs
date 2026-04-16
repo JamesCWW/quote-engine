@@ -744,10 +744,47 @@ function onGenerateEmailResponse(event) {
 // PDF ESTIMATE
 // =============================================================================
 
-/** Show PDF form — prompts for customer name before generating. */
+/** Parse "Name <email>" or bare email from a From header. */
+function parseFrom_(from) {
+  var match = from.match(/^(.*?)\s*<(.+?)>$/);
+  if (match) {
+    return { name: match[1].trim().replace(/"/g, ''), email: match[2].trim() };
+  }
+  return { name: from.trim(), email: from.trim() };
+}
+
+/**
+ * Show PDF confirmation card — auto-extracts customer from thread (first
+ * message NOT from helionsforge.com) and shows an editable confirmation card.
+ */
 function onShowPdfForm(event) {
+  var messageId   = (event.gmail && event.gmail.messageId) || cacheGet_('messageId');
+  var accessToken = event.gmail && event.gmail.accessToken;
+  var extracted   = { name: '', email: '' };
+
+  if (messageId) {
+    try {
+      if (accessToken) GmailApp.setCurrentMessageAccessToken(accessToken);
+      var message  = GmailApp.getMessageById(messageId);
+      var thread   = message.getThread();
+      var messages = thread.getMessages();
+      // Find the first message NOT from Helions Forge
+      var customerFrom = '';
+      for (var i = 0; i < messages.length; i++) {
+        var from = messages[i].getFrom() || '';
+        if (from.indexOf('helionsforge.com') === -1) {
+          customerFrom = from;
+          break;
+        }
+      }
+      if (customerFrom) extracted = parseFrom_(customerFrom);
+    } catch (e) { /* fall through */ }
+  }
+
   return CardService.newActionResponseBuilder()
-    .setNavigation(CardService.newNavigation().pushCard(buildPdfFormCard_()))
+    .setNavigation(CardService.newNavigation().pushCard(
+      buildPdfConfirmCard_(extracted.name, extracted.email)
+    ))
     .build();
 }
 
@@ -821,6 +858,7 @@ function onGeneratePdf(event) {
     return errorResponse_('PDF error: ' + e.message);
   }
 }
+
 
 /** Toast shown when Copy button is pressed (clipboard unavailable in add-ons). */
 function onCopyEmailNotification(event) {
@@ -1304,26 +1342,30 @@ function buildPhotoCard_(analysis, fileName) {
     .build();
 }
 
-/** PDF form card — collects customer name before generating. */
-function buildPdfFormCard_() {
+/**
+ * PDF confirmation card — pre-filled editable TextInputs for name and email.
+ * Extracted values are shown so the user can correct them before generating.
+ */
+function buildPdfConfirmCard_(name, email) {
+  var nameInput = CardService.newTextInput()
+    .setFieldName('pdf_customer_name')
+    .setTitle('Name')
+    .setHint('e.g. John Smith');
+  if (name) nameInput.setValue(name);
+
+  var emailInput = CardService.newTextInput()
+    .setFieldName('pdf_customer_email')
+    .setTitle('Email (optional)')
+    .setHint('e.g. john@example.com');
+  if (email) emailInput.setValue(email);
+
   return CardService.newCardBuilder()
     .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Generate PDF Estimate'))
     .addSection(
       CardService.newCardSection()
-        .addWidget(CardService.newTextParagraph()
-          .setText('Enter the customer details to include on the PDF estimate.'))
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName('pdf_customer_name')
-            .setTitle('Customer name *')
-            .setHint('e.g. John Smith / Smith Developments Ltd')
-        )
-        .addWidget(
-          CardService.newTextInput()
-            .setFieldName('pdf_customer_email')
-            .setTitle('Customer email (optional)')
-            .setHint('e.g. john@example.com')
-        )
+        .addWidget(CardService.newTextParagraph().setText('Generating PDF for:'))
+        .addWidget(nameInput)
+        .addWidget(emailInput)
     )
     .addSection(
       CardService.newCardSection()
