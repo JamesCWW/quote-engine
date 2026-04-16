@@ -60,6 +60,7 @@ export async function POST(req: NextRequest) {
       similar_quote_ids: result.similar_quotes.map((q) => q.id),
       quote_mode: result.quote_mode,
       ...(result.cost_breakdown ? { cost_breakdown: result.cost_breakdown } : {}),
+      ...(result.det_breakdown ? { det_breakdown: result.det_breakdown } : {}),
       ...(result.components?.length ? { components: result.components } : {}),
       ...(result.options?.length ? { options: result.options } : {}),
       ...(result.job_components?.length ? { job_components: result.job_components } : {}),

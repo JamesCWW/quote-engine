@@ -954,17 +954,42 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
     card.addSection(optSection);
   }
 
-  // ── 7. Cost breakdown (collapsible — precise railing estimates only) ──────
-  if (q.cost_breakdown && !(q.components && q.components.length > 1)) {
+  // ── 7. Cost breakdown (collapsible) ─────────────────────────────────────
+  if (q.det_breakdown) {
+    var db = q.det_breakdown;
+    var lines = ['Product supply: £' + fmt_(db.product_supply)];
+    if (db.manufacture > 0) lines.push('Manufacture:    £' + fmt_(db.manufacture));
+    if (db.installation > 0) lines.push('Installation:   £' + fmt_(db.installation));
+    if (db.accessories && db.accessories.length > 0) {
+      for (var i = 0; i < db.accessories.length; i++) {
+        lines.push('  ' + db.accessories[i].name + ': £' + fmt_(db.accessories[i].amount));
+      }
+    }
+    lines.push('──────────────────────');
+    lines.push('Subtotal:       £' + fmt_(db.subtotal));
+    lines.push('Contingency:    £' + fmt_(db.contingency) + ' (5%)');
+    lines.push('──────────────────────');
+    lines.push('ESTIMATE:       £' + fmt_(q.price_low) + ' – £' + fmt_(q.price_high));
+    if (db.minimum_applied) lines.push('(floor raised to minimum: £' + fmt_(db.minimum_applied) + ')');
+    if (db.job_type_matched) lines.push('Job type: ' + db.job_type_matched);
+
+    card.addSection(
+      CardService.newCardSection()
+        .setHeader('Cost Breakdown')
+        .setCollapsible(true)
+        .setNumUncollapsibleWidgets(0)
+        .addWidget(CardService.newTextParagraph().setText(lines.join('\n')))
+    );
+  } else if (q.cost_breakdown) {
     var cb = q.cost_breakdown;
-    var lines = [
+    var cbLines = [
       'Materials:    £' + fmt_(cb.material_cost),
       'Manufacture:  £' + fmt_(cb.manufacture_cost) + ' (' + cb.manufacture_days + ' days × £507)',
       'Installation: £' + fmt_(cb.install_cost) + ' (' + cb.install_days + ' days × ' + cb.engineers + ' engineers × £523.84)',
       'Finishing:    £' + fmt_(cb.finishing_cost),
       '──────────────────────',
       'Subtotal:     £' + fmt_(cb.subtotal),
-      'Contingency:  £' + fmt_(cb.contingency) + ' (10%)',
+      'Contingency:  £' + fmt_(cb.contingency) + ' (5%)',
       '──────────────────────',
       'ESTIMATE:     £' + fmt_(q.price_low) + ' – £' + fmt_(q.price_high),
     ].join('\n');
@@ -974,7 +999,7 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
         .setHeader('Cost Breakdown')
         .setCollapsible(true)
         .setNumUncollapsibleWidgets(0)
-        .addWidget(CardService.newTextParagraph().setText(lines))
+        .addWidget(CardService.newTextParagraph().setText(cbLines))
     );
   }
 

@@ -31,6 +31,22 @@ export interface JobComponent {
   style?: string;
 }
 
+export interface DetBreakdown {
+  product_supply: number;
+  manufacture: number;
+  installation: number;
+  accessories: Array<{ name: string; amount: number }>;
+  accessories_total: number;
+  subtotal: number;
+  contingency: number;
+  price_low: number;
+  price_high: number;
+  minimum_applied: number | null;
+  job_type_matched: string | null;
+  product_matched: string | null;
+  notes: string[];
+}
+
 export interface QuoteResult {
   price_low: number;
   price_high: number;
@@ -42,6 +58,7 @@ export interface QuoteResult {
   quote_mode: 'precise' | 'rough';
   similar_quotes: SimilarQuote[];
   cost_breakdown?: CostBreakdown;
+  det_breakdown?: DetBreakdown;
   components?: Array<{
     name: string;
     items: Array<{ label: string; amount: number; note?: string }>;

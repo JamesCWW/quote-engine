@@ -552,9 +552,10 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     // Railing installation: select job type based on total railing length
     let railingInstallCost = 0;
     let railingInstallLabel = '';
+    let railingJT: typeof allJobTypes[0] | undefined;
     if (railingComps.length > 0) {
       const totalRailingM = railingComps.reduce((s, c) => s + (c.length_m ?? 0), 0);
-      const railingJT = totalRailingM <= 10
+      railingJT = totalRailingM <= 10
         ? allJobTypes.find((jt) => /up to 10/i.test(jt.job_type) && /railing/i.test(jt.job_type))
         : allJobTypes.find((jt) => /11 to 20/i.test(jt.job_type) && /railing/i.test(jt.job_type));
       console.log(`[det-engine] Railing install: totalRailingM=${totalRailingM}m → job_type="${railingJT?.job_type ?? 'fallback (no match)'}"`);
@@ -613,6 +614,10 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     const priceHighMulti = Math.max(priceLowMulti + 1, rawHighMulti);
 
     const totalInstallCost = gateInstallCostRounded + Math.round(railingInstallCost);
+
+    console.log('GATE INSTALL:', bestGateJT?.job_type, bestGateJT?.install_days, 'days');
+    console.log('RAILING INSTALL:', railingJT?.job_type, railingJT?.install_days, 'days');
+    console.log('TOTAL INSTALL COST:', totalInstallCost);
 
     const breakdownMulti: DeterministicBreakdown = {
       product_supply: Math.round(totalSupply),
@@ -1267,6 +1272,6 @@ Return JSON only:
 }
 
 export async function generateDeterministicQuote(params: QuoteParams): Promise<QuoteResult> {
-  const { result } = await runDeterministicEngine(params);
-  return result;
+  const { result, breakdown } = await runDeterministicEngine(params);
+  return { ...result, det_breakdown: breakdown };
 }
