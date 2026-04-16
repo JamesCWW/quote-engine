@@ -740,6 +740,88 @@ function onGenerateEmailResponse(event) {
   }
 }
 
+// =============================================================================
+// PDF ESTIMATE
+// =============================================================================
+
+/** Show PDF form — prompts for customer name before generating. */
+function onShowPdfForm(event) {
+  return CardService.newActionResponseBuilder()
+    .setNavigation(CardService.newNavigation().pushCard(buildPdfFormCard_()))
+    .build();
+}
+
+/** Generate PDF estimate and show download link. */
+function onGeneratePdf(event) {
+  var f            = event.formInput || {};
+  var customerName = (f.pdf_customer_name || '').trim();
+  var customerEmail = (f.pdf_customer_email || '').trim();
+  var q            = cacheGet_('quote');
+  var summary      = cacheGet_('summary') || '';
+  var p            = getProps_();
+
+  if (!customerName) {
+    return errorResponse_('Please enter the customer name.');
+  }
+  if (!q) {
+    return errorResponse_('No estimate found — please generate one first.');
+  }
+
+  try {
+    var payload = {
+      tenant_id:       p.tenantId,
+      customer_name:   customerName,
+      project_summary: summary || 'See estimate details.',
+      price_low:       q.price_low,
+      price_high:      q.price_high,
+      breakdown:       q.det_breakdown || null,
+      components:      q.components    || null,
+      valid_days:      30,
+    };
+    if (customerEmail) payload.customer_email = customerEmail;
+
+    var result = apiPost_('/api/estimates/pdf', payload);
+
+    if (result.code !== 200) {
+      return errorResponse_('PDF generation failed (' + result.code + '): ' + (result.body.error || 'Unknown error'));
+    }
+
+    var pdfUrl = result.body.url;
+    var pdfRef = result.body.ref || 'Estimate';
+
+    var card = CardService.newCardBuilder()
+      .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('PDF Ready'))
+      .addSection(
+        CardService.newCardSection()
+          .addWidget(CardService.newTextParagraph().setText('✅ PDF estimate created for ' + customerName + '.'))
+          .addWidget(CardService.newKeyValue().setTopLabel('Reference').setContent(pdfRef))
+          .addWidget(
+            CardService.newTextButton()
+              .setText('📥  Download / View PDF')
+              .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+              .setOpenLink(
+                CardService.newOpenLink()
+                  .setUrl(pdfUrl)
+                  .setOpenAs(CardService.OpenAs.FULL_SIZE)
+              )
+          )
+          .addWidget(
+            CardService.newTextButton()
+              .setText('← Back to Estimate')
+              .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+          )
+      )
+      .build();
+
+    return CardService.newActionResponseBuilder()
+      .setNavigation(CardService.newNavigation().pushCard(card))
+      .build();
+
+  } catch (e) {
+    return errorResponse_('PDF error: ' + e.message);
+  }
+}
+
 /** Toast shown when Copy button is pressed (clipboard unavailable in add-ons). */
 function onCopyEmailNotification(event) {
   return CardService.newActionResponseBuilder()
@@ -970,7 +1052,7 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
   }
   card.addSection(priceSection);
 
-  // ── 2. Primary CTA: Generate Email + Edit & Recalculate ──────────────────
+  // ── 2. Primary CTA: Generate Email + PDF + Edit & Recalculate ────────────
   card.addSection(
     CardService.newCardSection()
       .addWidget(
@@ -981,6 +1063,14 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
             CardService.newAction()
               .setFunctionName('onGenerateEmailResponse')
               .setParameters({ tone: 'friendly' })
+          )
+      )
+      .addWidget(
+        CardService.newTextButton()
+          .setText('📄  Generate PDF Estimate')
+          .setOnClickAction(
+            CardService.newAction()
+              .setFunctionName('onShowPdfForm')
           )
       )
       .addWidget(
@@ -1211,6 +1301,44 @@ function buildPhotoCard_(analysis, fileName) {
     .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Photo Analysis'))
     .addSection(section)
     .addSection(actionSection)
+    .build();
+}
+
+/** PDF form card — collects customer name before generating. */
+function buildPdfFormCard_() {
+  return CardService.newCardBuilder()
+    .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Generate PDF Estimate'))
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(CardService.newTextParagraph()
+          .setText('Enter the customer details to include on the PDF estimate.'))
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName('pdf_customer_name')
+            .setTitle('Customer name *')
+            .setHint('e.g. John Smith / Smith Developments Ltd')
+        )
+        .addWidget(
+          CardService.newTextInput()
+            .setFieldName('pdf_customer_email')
+            .setTitle('Customer email (optional)')
+            .setHint('e.g. john@example.com')
+        )
+    )
+    .addSection(
+      CardService.newCardSection()
+        .addWidget(
+          CardService.newTextButton()
+            .setText('📄  Generate PDF')
+            .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
+            .setOnClickAction(CardService.newAction().setFunctionName('onGeneratePdf'))
+        )
+        .addWidget(
+          CardService.newTextButton()
+            .setText('← Back')
+            .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
+        )
+    )
     .build();
 }
 
