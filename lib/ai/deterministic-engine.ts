@@ -6,6 +6,20 @@ export type { QuoteParams };
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
+export interface JobComponent {
+  product_type: string;
+  material: string;
+  width_mm: number | null;
+  height_mm: number | null;
+  length_m: number | null;
+  design_name: string | null;
+  quantity: number;
+  is_electric: boolean | null;
+  has_posts: boolean | null;
+  price_per_metre: number | null;
+  notes: string | null;
+}
+
 export interface ExtractedSpec {
   product_type:
     | 'iron_driveway_gates'
@@ -13,6 +27,7 @@ export interface ExtractedSpec {
     | 'iron_pedestrian_gate'
     | 'aluminium_pedestrian_gate'
     | 'railings'
+    | 'prefab_railings'
     | 'wall_top_railings'
     | 'handrails'
     | 'juliette_balcony'
@@ -29,7 +44,15 @@ export interface ExtractedSpec {
   quantity: number | null;
   items: Array<{ width_mm: number | null; height_mm: number | null }> | null;
   has_posts: boolean | null;
+  components: JobComponent[] | null;
   confidence_per_field: Record<string, 'confirmed' | 'assumed' | 'unknown'>;
+}
+
+export interface ComponentBreakdown {
+  label: string;
+  supply: number;
+  accessories: Array<{ name: string; amount: number }>;
+  notes: string[];
 }
 
 export interface DeterministicBreakdown {
@@ -46,6 +69,7 @@ export interface DeterministicBreakdown {
   job_type_matched: string | null;
   product_matched: string | null;
   notes: string[];
+  component_breakdowns?: ComponentBreakdown[];
 }
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -60,11 +84,11 @@ async function extractSpec(enquiryText: string): Promise<ExtractedSpec> {
       {
         role: 'user',
         content: `You are a metalwork quoting assistant for a UK bespoke gates and railings business.
-Extract structured data from this enquiry.
+Extract structured data from this enquiry. Many enquiries contain MULTIPLE products — identify ALL of them.
 
 Return ONLY valid JSON with this exact shape:
 {
-  "product_type": "iron_driveway_gates" | "aluminium_driveway_gates" | "iron_pedestrian_gate" | "aluminium_pedestrian_gate" | "railings" | "wall_top_railings" | "handrails" | "juliette_balcony" | "unknown",
+  "product_type": "iron_driveway_gates" | "aluminium_driveway_gates" | "iron_pedestrian_gate" | "aluminium_pedestrian_gate" | "railings" | "prefab_railings" | "wall_top_railings" | "handrails" | "juliette_balcony" | "unknown",
   "material": "mild_steel" | "aluminium" | "unknown",
   "is_electric": true | false | null,
   "width_mm": number | null,
@@ -77,6 +101,21 @@ Return ONLY valid JSON with this exact shape:
   "quantity": number | null,
   "items": [{"width_mm": number | null, "height_mm": number | null}] | null,
   "has_posts": true | false | null,
+  "components": [
+    {
+      "product_type": "iron_driveway_gates" | "aluminium_driveway_gates" | "iron_pedestrian_gate" | "aluminium_pedestrian_gate" | "railings" | "prefab_railings" | "wall_top_railings" | "handrails" | "juliette_balcony" | "unknown",
+      "material": "mild_steel" | "aluminium" | "unknown",
+      "width_mm": number | null,
+      "height_mm": number | null,
+      "length_m": number | null,
+      "design_name": string | null,
+      "quantity": 1,
+      "is_electric": true | false | null,
+      "has_posts": true | false | null,
+      "price_per_metre": number | null,
+      "notes": string | null
+    }
+  ],
   "confidence_per_field": {
     "product_type": "confirmed" | "assumed" | "unknown",
     "material": "confirmed" | "assumed" | "unknown",
@@ -105,6 +144,15 @@ Conversion rules:
 - quantity: number of gates/units requested. Set to 2 if "pair", "two", "both" mentioned. Default null (treated as 1).
 - items: if multiple sets of dimensions are listed, output each as an object. If only one set (or none), set to null. width_mm and height_mm in each item use the same mm conversion rules.
 - has_posts: true if the enquiry mentions posts, gate posts, or concrete-in posts. false if "brick to brick" is mentioned (no posts needed). null if not mentioned.
+- prefab_railings: use this type for prefabricated / panel railings sold by length; "railings" is for bespoke/custom
+- price_per_metre: if the customer states a per-metre price for railings, capture it here (in GBP)
+
+Components array rules:
+- ALWAYS populate components with at least one entry (the primary product).
+- If the enquiry mentions multiple distinct products (e.g. driveway gates + pedestrian gate + railings), add each as a SEPARATE entry in components.
+- Top-level fields (product_type, width_mm, etc.) describe the primary/first component only.
+- For each gate component, capture width_mm, height_mm, design_name, is_electric, has_posts, quantity.
+- For each railing/prefab_railings component, capture length_m and price_per_metre (if stated).
 
 Enquiry text:
 ${enquiryText}`,
@@ -294,6 +342,305 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
   const fabricationRate = rates?.fabrication_day_rate ?? 507;
   const installRate = rates?.installation_day_rate ?? 523.84;
 
+  // ── Multi-component path ───────────────────────────────────────────────────
+  // When Haiku detects multiple distinct products, price each separately and return early.
+  const isMultiComponent = !!(spec.components && spec.components.length > 1);
+
+  if (isMultiComponent) {
+    const components = spec.components!;
+    const products = (productRows.data ?? []) as ProductRow[];
+
+    type JobTypeRow = {
+      job_type: string;
+      minimum_value: number | null;
+      manufacture_days: number | null;
+      install_days: number | null;
+      engineers_required: number | null;
+    };
+    const allJobTypes = (jobTypesRes.data ?? []) as JobTypeRow[];
+
+    // Fetch accessories (iron + automation covers most multi-component jobs)
+    const { data: allAccData } = await supabase
+      .from('accessories_pricing')
+      .select('item_name, helions_price, category')
+      .eq('tenant_id', tenant_id)
+      .in('category', ['iron_accessories', 'aluminium_accessories', 'automation'])
+      .not('helions_price', 'is', null);
+    type AccRow = { item_name: string; helions_price: number; category: string };
+    const allAcc = (allAccData ?? []) as AccRow[];
+    const findAccItem = (pattern: RegExp) => allAcc.find((a) => pattern.test(a.item_name));
+
+    const componentBreakdowns: ComponentBreakdown[] = [];
+    let totalSupply = 0;
+    const allComponentAccessories: Array<{ name: string; amount: number }> = [];
+
+    for (const comp of components) {
+      const compQty = comp.quantity ?? 1;
+      const compLabel = [
+        comp.design_name ?? comp.product_type.replace(/_/g, ' '),
+        comp.width_mm && comp.height_mm
+          ? `(${comp.width_mm / 1000}m × ${comp.height_mm / 1000}m)`
+          : comp.length_m
+            ? `(${comp.length_m}m)`
+            : '',
+      ]
+        .filter(Boolean)
+        .join(' ');
+
+      const compAccessories: Array<{ name: string; amount: number }> = [];
+      const compNotes: string[] = [];
+      let compSupply = 0;
+
+      const isDrivewayComp = comp.product_type.includes('driveway');
+      const isPedestrianComp = comp.product_type.includes('pedestrian');
+      const isGateComp = isDrivewayComp || isPedestrianComp || comp.product_type.includes('gate');
+      const isRailingsComp = comp.product_type.includes('railing');
+      const isElectricComp = comp.is_electric === true;
+
+      if (comp.product_type === 'iron_pedestrian_gate') {
+        // Interpolation fallback — no product table for iron pedestrian gates yet
+        if (!comp.width_mm && !comp.height_mm) {
+          compSupply = 1800 * compQty;
+          compNotes.push('No dimensions provided — using £1,800 default estimate');
+        } else {
+          const w = comp.width_mm ?? 1000;
+          const h = comp.height_mm ?? 1800;
+          const wf = Math.max(0, Math.min(1, (w - 1000) / 1000));
+          const hf = Math.max(0, Math.min(1, (h - 1800) / 200));
+          const base = 1500 + wf * 800 + hf * 200;
+          compSupply = Math.max(1500, Math.min(2500, Math.round(base))) * compQty;
+        }
+        compNotes.push('Iron pedestrian gate — estimated price (no product table yet)');
+      } else if (isGateComp && products.length > 0) {
+        // Gate with product table — use existing lookup logic
+        const best = findSmallestFittingProduct(products, comp.width_mm, comp.height_mm);
+        if (best?.price_gbp) {
+          compSupply = best.price_gbp * compQty;
+          compNotes.push(comp.design_name ? `Matched: ${best.design_name ?? comp.design_name}` : 'Mid-range estimate used');
+        } else {
+          const median = getMedianProduct(products);
+          if (median?.price_gbp) {
+            compSupply = median.price_gbp * compQty;
+            compNotes.push('Mid-range estimate used');
+          }
+        }
+      } else if (isRailingsComp) {
+        const lengthM = comp.length_m ?? 0;
+        const ratePerM = comp.price_per_metre ?? 80;
+        compSupply = Math.round(lengthM * ratePerM);
+        if (lengthM > 0) {
+          compNotes.push(
+            comp.price_per_metre
+              ? `${lengthM}m × £${ratePerM}/m (customer-stated rate)`
+              : `${lengthM}m × £${ratePerM}/m (prefab railings placeholder rate)`
+          );
+        } else {
+          compNotes.push('Railing length not specified — supply cost £0');
+        }
+      }
+
+      // Gate accessories: posts
+      if (isGateComp && comp.has_posts !== false) {
+        const postCount = isDrivewayComp ? 2 : 1;
+        const post = isDrivewayComp
+          ? findAccItem(/large.*post|post.*large/i)
+          : findAccItem(/gate.*post|post.*gate/i);
+        if (post) {
+          compAccessories.push({
+            name: `Gate post${postCount > 1 ? 's' : ''} × ${postCount}`,
+            amount: post.helions_price * postCount,
+          });
+        }
+      }
+
+      // Automation accessories (electric gates)
+      if (isGateComp && isElectricComp) {
+        const fob = findAccItem(/remote.*fob|fob/i);
+        if (fob) compAccessories.push({ name: 'Remote fobs × 2', amount: fob.helions_price * 2 });
+        const motorKit = findAccItem(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i);
+        if (motorKit) compAccessories.push({ name: motorKit.item_name, amount: motorKit.helions_price });
+        const photocell = findAccItem(/photocell|dir\b/i);
+        if (photocell) compAccessories.push({ name: photocell.item_name, amount: photocell.helions_price });
+        const shoes = findAccItem(/underground.*shoes|shoes.*underground/i);
+        if (shoes) compAccessories.push({ name: shoes.item_name, amount: shoes.helions_price });
+        if (rates?.consumer_unit_connection) {
+          compAccessories.push({ name: 'Consumer unit connection', amount: rates.consumer_unit_connection });
+        }
+      }
+
+      totalSupply += compSupply;
+      allComponentAccessories.push(...compAccessories);
+      componentBreakdowns.push({ label: compLabel, supply: compSupply, accessories: compAccessories, notes: compNotes });
+
+      console.log(`[det-engine] Component "${compLabel}": supply=£${compSupply} accessories=£${compAccessories.reduce((s, a) => s + a.amount, 0)}`);
+    }
+
+    // ── Installation: match job types per component category ─────────────────
+    const primaryGateComp = components.find(
+      (c) => c.product_type.includes('driveway') || c.product_type.includes('gate')
+    );
+    const railingComps = components.filter((c) => c.product_type.includes('railing'));
+
+    // Gate installation job type scoring (mirrors single-product logic)
+    let bestGateJT: JobTypeRow | null = null;
+    let bestScore = 0;
+    if (primaryGateComp) {
+      const isAlumComp = primaryGateComp.material === 'aluminium';
+      const isElectComp = primaryGateComp.is_electric === true;
+      for (const jt of allJobTypes) {
+        const jtl = jt.job_type.toLowerCase();
+        let score = 0;
+        if (isAlumComp && /alumin/.test(jtl)) score += 3;
+        if (!isAlumComp && /\b(iron|mild.?steel)\b/.test(jtl)) score += 3;
+        if (isElectComp && /electric|automat/.test(jtl)) score += 3;
+        if (!isElectComp && primaryGateComp.is_electric !== null && !/electric|automat/.test(jtl)) score += 2;
+        if (primaryGateComp.product_type.includes('pedestrian') && /pedestrian/.test(jtl)) score += 3;
+        if (primaryGateComp.product_type.includes('driveway') && /driveway/.test(jtl)) score += 2;
+        if (score > bestScore) { bestScore = score; bestGateJT = jt; }
+      }
+    }
+
+    const gateInstallDays = bestGateJT?.install_days ?? 0;
+    const gateEngineers = bestGateJT?.engineers_required ?? 1;
+    const gateInstallCost = gateInstallDays * installRate * gateEngineers;
+
+    // Railing installation: look for a railing job type, otherwise use 1 day per 10m
+    let railingInstallCost = 0;
+    let railingInstallLabel = '';
+    if (railingComps.length > 0) {
+      const railingJT = allJobTypes.find((jt) => /railing/i.test(jt.job_type));
+      if (railingJT) {
+        const rlDays = railingJT.install_days ?? 1;
+        const rlEng = railingJT.engineers_required ?? 1;
+        railingInstallCost = rlDays * installRate * rlEng;
+        railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)} × ${rlEng} engineer${rlEng !== 1 ? 's' : ''}`;
+      } else {
+        const totalRailingM = railingComps.reduce((s, c) => s + (c.length_m ?? 0), 0);
+        const rlDays = Math.max(1, Math.ceil(totalRailingM / 10));
+        railingInstallCost = rlDays * installRate;
+        railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)}`;
+      }
+      allComponentAccessories.push({ name: railingInstallLabel, amount: Math.round(railingInstallCost) });
+    }
+
+    // Gate install is tracked as the primary installation line.
+    // Railing install is already pushed into allComponentAccessories above.
+    const gateInstallCostRounded = Math.round(gateInstallCost);
+
+    // Design fee
+    const designFee = (rates as typeof rates & { design_fee?: number | null })?.design_fee ?? null;
+    if (designFee) {
+      allComponentAccessories.push({ name: 'Design fee', amount: designFee });
+    }
+
+    const accessoriesTotal = allComponentAccessories.reduce((s, a) => s + a.amount, 0);
+    const minimum = (bestGateJT?.minimum_value ?? rates?.minimum_job_value) ?? 0;
+
+    // basePrice includes supply + gate install + all accessories (incl. railing install + design fee)
+    const basePrice = totalSupply + gateInstallCostRounded + accessoriesTotal;
+    const contingency = Math.round(basePrice * 0.05);
+    const total = basePrice + contingency;
+
+    // Confidence based on primary component
+    const primaryComp = components[0];
+    const noDimsMulti = !primaryComp?.width_mm && !primaryComp?.height_mm && !primaryComp?.length_m;
+    const confidenceMulti = calculateConfidence(spec, true, noDimsMulti);
+    const rangeMulti = confidenceMulti === 'high' ? 0.1 : confidenceMulti === 'medium' ? 0.2 : 0.35;
+
+    const rawLowMulti = Math.round(total * (1 - rangeMulti));
+    const rawHighMulti = Math.round(total * (1 + rangeMulti));
+    const priceLowMulti = Math.max(minimum, rawLowMulti);
+    const priceHighMulti = Math.max(priceLowMulti + 1, rawHighMulti);
+
+    const totalInstallCost = gateInstallCostRounded + Math.round(railingInstallCost);
+
+    const breakdownMulti: DeterministicBreakdown = {
+      product_supply: Math.round(totalSupply),
+      manufacture: 0,
+      installation: totalInstallCost,
+      accessories: allComponentAccessories,
+      accessories_total: Math.round(accessoriesTotal),
+      subtotal: Math.round(basePrice),
+      contingency,
+      price_low: priceLowMulti,
+      price_high: priceHighMulti,
+      minimum_applied: priceLowMulti > rawLowMulti ? minimum : null,
+      job_type_matched: bestGateJT?.job_type ?? null,
+      product_matched: primaryComp?.design_name ?? null,
+      notes: componentBreakdowns.flatMap((cb) => cb.notes),
+      component_breakdowns: componentBreakdowns,
+    };
+
+    // Build component summary for Haiku explanation
+    const compSummary = componentBreakdowns
+      .map((cb, i) => {
+        const accStr = cb.accessories.map((a) => `  ${a.name}: £${a.amount}`).join('\n');
+        return `Component ${i + 1} — ${cb.label}\n  Supply: £${cb.supply}\n${accStr}${cb.notes.length ? '\n  Note: ' + cb.notes.join('; ') : ''}`;
+      })
+      .join('\n');
+
+    let reasoningMulti = `Multi-component estimate: ${components.length} products totalling £${Math.round(totalSupply).toLocaleString()} supply + £${totalInstallCost.toLocaleString()} installation.`;
+    let missingInfoMulti: string[] = [];
+
+    try {
+      const explanationMsg = await anthropic.messages.create({
+        model: 'claude-haiku-4-5-20251001',
+        max_tokens: 512,
+        messages: [{
+          role: 'user',
+          content: `You are a UK metalwork quoting assistant. Write a short explanation of this multi-component estimate.
+
+Components:
+${compSummary}
+
+Gate installation: ${gateInstallDays} days × £${installRate.toFixed(2)} × ${gateEngineers} engineers = £${gateInstallCostRounded}
+${railingInstallLabel ? railingInstallLabel + ' = £' + Math.round(railingInstallCost) : ''}
+Confidence: ${confidenceMulti}
+Price range: £${priceLowMulti.toLocaleString()} – £${priceHighMulti.toLocaleString()}
+
+Return JSON only:
+{"reasoning": "2-3 sentence plain English explanation", "missing_info": ["any clarifying questions"]}`,
+        }],
+      });
+      const ec = explanationMsg.content[0];
+      if (ec.type === 'text') {
+        const m = ec.text.match(/\{[\s\S]*\}/);
+        if (m) {
+          const r = JSON.parse(m[0]) as { reasoning?: string; missing_info?: string[] };
+          if (r.reasoning) reasoningMulti = r.reasoning;
+          if (r.missing_info) missingInfoMulti = r.missing_info;
+        }
+      }
+    } catch (err) {
+      console.error('[det-engine] Multi-component explanation step failed (non-fatal):', err);
+    }
+
+    const resultMulti: QuoteResult = {
+      price_low: priceLowMulti,
+      price_high: priceHighMulti,
+      confidence: confidenceMulti,
+      reasoning: reasoningMulti,
+      missing_info: missingInfoMulti,
+      product_type: spec.product_type,
+      material: spec.material,
+      quote_mode: 'precise',
+      similar_quotes: [],
+      cost_breakdown: {
+        material_cost: Math.round(totalSupply),
+        manufacture_cost: 0,
+        manufacture_days: 0,
+        install_cost: totalInstallCost,
+        install_days: gateInstallDays,
+        engineers: gateEngineers,
+        finishing_cost: 0,
+        subtotal: Math.round(basePrice),
+        contingency,
+      },
+    };
+
+    return { result: resultMulti, spec, breakdown: breakdownMulti };
+  }
+
   // ── Step 2: Product lookup ─────────────────────────────────────────────────
   let productSupplyCost = 0;
   let productFound = false;
@@ -396,6 +743,28 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
         if (quantity > 1) productNotes.push(`Quantity: ${quantity}`);
       }
     }
+  }
+
+  // ── Iron pedestrian gate fallback — no product table yet ─────────────────
+  // Applies only to the single-product path; multi-component path handles this per component.
+  if (spec.product_type === 'iron_pedestrian_gate' && !productFound) {
+    let estimatedPrice: number;
+    if (!spec.width_mm && !spec.height_mm) {
+      estimatedPrice = 1800;
+      productNotes.push('No dimensions provided — using £1,800 default estimate');
+    } else {
+      const w = spec.width_mm ?? 1000;
+      const h = spec.height_mm ?? 1800;
+      const widthFactor = Math.max(0, Math.min(1, (w - 1000) / 1000));
+      const heightFactor = Math.max(0, Math.min(1, (h - 1800) / 200));
+      const base = 1500 + widthFactor * 800 + heightFactor * 200;
+      estimatedPrice = Math.max(1500, Math.min(2500, Math.round(base)));
+    }
+    productSupplyCost = estimatedPrice * quantity;
+    productFound = true;
+    productMatchedName = 'Iron pedestrian gate (estimated)';
+    productNotes.push('Iron pedestrian gate — estimated price (no product table yet)');
+    console.log(`[det-engine] Iron pedestrian gate interpolation fallback: £${estimatedPrice} × ${quantity}`);
   }
 
   console.log(
