@@ -549,18 +549,21 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     const gateEngineers = bestGateJT?.engineers_required ?? 1;
     const gateInstallCost = gateInstallDays * installRate * gateEngineers;
 
-    // Railing installation: look for a railing job type, otherwise use 1 day per 10m
+    // Railing installation: select job type based on total railing length
     let railingInstallCost = 0;
     let railingInstallLabel = '';
     if (railingComps.length > 0) {
-      const railingJT = allJobTypes.find((jt) => /railing/i.test(jt.job_type));
+      const totalRailingM = railingComps.reduce((s, c) => s + (c.length_m ?? 0), 0);
+      const railingJT = totalRailingM <= 10
+        ? allJobTypes.find((jt) => /up to 10/i.test(jt.job_type) && /railing/i.test(jt.job_type))
+        : allJobTypes.find((jt) => /11 to 20/i.test(jt.job_type) && /railing/i.test(jt.job_type));
+      console.log(`[det-engine] Railing install: totalRailingM=${totalRailingM}m → job_type="${railingJT?.job_type ?? 'fallback (no match)'}"`);
       if (railingJT) {
         const rlDays = railingJT.install_days ?? 1;
         const rlEng = railingJT.engineers_required ?? 1;
         railingInstallCost = rlDays * installRate * rlEng;
         railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)} × ${rlEng} engineer${rlEng !== 1 ? 's' : ''}`;
       } else {
-        const totalRailingM = railingComps.reduce((s, c) => s + (c.length_m ?? 0), 0);
         const rlDays = Math.max(1, Math.ceil(totalRailingM / 10));
         railingInstallCost = rlDays * installRate;
         railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)}`;
@@ -913,6 +916,20 @@ Return JSON only:
       }
     } else {
       console.log(`[det-engine] Aluminium driveway gate — "brick to brick" detected, keeping scored job type`);
+    }
+  }
+
+  // Railing job type override: select based on length (up to 10m vs 11–20m)
+  if (spec.product_type.includes('railing')) {
+    const lengthM = spec.length_m ?? 0;
+    const targetJT = lengthM <= 10
+      ? allJobTypes.find((jt) => /up to 10/i.test(jt.job_type) && /railing/i.test(jt.job_type))
+      : allJobTypes.find((jt) => /11 to 20/i.test(jt.job_type) && /railing/i.test(jt.job_type));
+    if (targetJT) {
+      console.log(
+        `[det-engine] Railing job type override: length=${lengthM}m → "${targetJT.job_type}" (install_days=${targetJT.install_days}, engineers=${targetJT.engineers_required})`
+      );
+      bestJobType = targetJT;
     }
   }
 
