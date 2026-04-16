@@ -268,7 +268,7 @@ export async function POST(req: NextRequest) {
       ref: estRef_,
     });
   } catch (err) {
-    console.error('[estimates/pdf]', err);
-    return NextResponse.json({ error: 'PDF generation failed' }, { status: 500 });
+    console.error('[estimates/pdf] PDF generation error:', err);
+    return NextResponse.json({ error: (err as Error).message || 'PDF generation failed' }, { status: 500 });
   }
 }
