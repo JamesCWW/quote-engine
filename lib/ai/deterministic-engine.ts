@@ -139,7 +139,11 @@ Confidence rules:
 Conversion rules:
 - width/height: always output in millimetres
 - If given in metres: multiply by 1000. In cm: multiply by 10. In feet: multiply by 304.8.
-- design_name: gate design names like Norfolk, Surrey, Hertfordshire, Essex, etc.
+- design_name: If the enquiry mentions any of the following design names, extract it exactly as written into design_name.
+  Known iron driveway gate designs: Saffron Walden, Bury St Edmunds, Grantchester, Burwell, Linton, Finchingfield, Clavering, Sudbury, Ely, Oxford, Newmarket, Huntingdon, Thetford, Wellingborough, Thaxted, Halstead
+  Known aluminium driveway gate designs: Hertfordshire, Surrey, Cambridgeshire, London, Essex, Buckinghamshire, Suffolk, Northamptonshire, Norfolk, Bedfordshire
+  Known aluminium pedestrian gate designs: Hertfordshire, Surrey, Cambridgeshire, Bedfordshire
+  If a design name is mentioned but not in these lists, still extract it — it may be a new design.
 - installation_included: default assumed true unless customer says collect/supply-only
 - quantity: number of gates/units requested. Set to 2 if "pair", "two", "both" mentioned. Default null (treated as 1).
 - items: if multiple sets of dimensions are listed, output each as an object. If only one set (or none), set to null. width_mm and height_mm in each item use the same mm conversion rules.
