@@ -56,10 +56,13 @@ export default function ProfileForm({ initialProfile }: Props) {
     setSaving(true);
     setSaved(false);
     setError('');
+    const website = form.website && !form.website.startsWith('http')
+      ? 'https://' + form.website
+      : form.website;
     const res = await fetch('/api/settings/profile', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...form, logo_url: logoUrl }),
+      body: JSON.stringify({ ...form, website, logo_url: logoUrl }),
     });
     setSaving(false);
     if (!res.ok) {
@@ -121,7 +124,7 @@ export default function ProfileForm({ initialProfile }: Props) {
           <div>
             <label className="block text-xs font-medium text-gray-700 mb-1">Website</label>
             <input
-              type="url"
+              type="text"
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-gray-900"
               {...textField('website')}
             />
