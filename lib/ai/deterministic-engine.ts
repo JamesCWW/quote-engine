@@ -590,10 +590,22 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     const primaryComp = components[0];
     const noDimsMulti = !primaryComp?.width_mm && !primaryComp?.height_mm && !primaryComp?.length_m;
     const confidenceMulti = calculateConfidence(spec, true, noDimsMulti);
-    const rangeMulti = confidenceMulti === 'high' ? 0.1 : confidenceMulti === 'medium' ? 0.2 : 0.35;
 
-    const rawLowMulti = Math.round(total * (1 - rangeMulti));
-    const rawHighMulti = Math.round(total * (1 + rangeMulti));
+    let rangeAmtMulti: number;
+    let rawLowMulti: number;
+    let rawHighMulti: number;
+    if (confidenceMulti === 'high') {
+      rangeAmtMulti = total < 5000 ? 500 : total < 15000 ? 1000 : total < 30000 ? 2000 : 3000;
+      rawLowMulti = Math.round(total - rangeAmtMulti);
+      rawHighMulti = Math.round(total + rangeAmtMulti);
+    } else if (confidenceMulti === 'medium') {
+      rangeAmtMulti = total < 5000 ? 750 : total < 15000 ? 1500 : total < 30000 ? 3000 : 5000;
+      rawLowMulti = Math.round(total - rangeAmtMulti);
+      rawHighMulti = Math.round(total + rangeAmtMulti);
+    } else {
+      rawLowMulti = Math.round(total * 0.75);
+      rawHighMulti = Math.round(total * 1.25);
+    }
     const priceLowMulti = Math.max(minimum, rawLowMulti);
     const priceHighMulti = Math.max(priceLowMulti + 1, rawHighMulti);
 
@@ -1118,14 +1130,24 @@ Return JSON only:
   const confidence = calculateConfidence(spec, productFound, noDimensions);
 
   // ── Step 7: Price range ────────────────────────────────────────────────────
-  const rangeMultiplier = confidence === 'high' ? 0.1 : confidence === 'medium' ? 0.2 : 0.35;
-
   const basePrice = productSupplyCost + manufactureCost + installCost + accessoriesTotal;
   const contingency = Math.round(basePrice * 0.05);
   const total = basePrice + contingency;
 
-  const rawLow = Math.round(total * (1 - rangeMultiplier));
-  const rawHigh = Math.round(total * (1 + rangeMultiplier));
+  let rawLow: number;
+  let rawHigh: number;
+  if (confidence === 'high') {
+    const rangeAmt = total < 5000 ? 500 : total < 15000 ? 1000 : total < 30000 ? 2000 : 3000;
+    rawLow = Math.round(total - rangeAmt);
+    rawHigh = Math.round(total + rangeAmt);
+  } else if (confidence === 'medium') {
+    const rangeAmt = total < 5000 ? 750 : total < 15000 ? 1500 : total < 30000 ? 3000 : 5000;
+    rawLow = Math.round(total - rangeAmt);
+    rawHigh = Math.round(total + rangeAmt);
+  } else {
+    rawLow = Math.round(total * 0.75);
+    rawHigh = Math.round(total * 1.25);
+  }
   const price_low = Math.max(minimum, rawLow);
   const price_high = Math.max(price_low + 1, rawHigh);
 
