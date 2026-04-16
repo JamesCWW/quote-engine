@@ -305,6 +305,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
 
   // ── Step 1: Extract structured spec ───────────────────────────────────────
   const spec = await extractSpec(enquiry_text);
+  console.log('STATED INSTALL:', spec.stated_install_days, 'engineers:', spec.stated_engineers);
 
   // Resolve category for this product type
   const productCategory = PRODUCT_TYPE_CATEGORY[spec.product_type] ?? null;
@@ -579,9 +580,9 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     if (railingComps.length > 0) {
       const totalRailingM = railingComps.reduce((s, c) => s + (c.length_m ?? 0), 0);
       const rlDays = getRailingInstallDays(totalRailingM);
-      const rlEng = totalRailingM > 10 ? 2 : 1;
+      const rlEng = 2; // railing install always requires 2 engineers
       railingInstallCost = rlDays * installRate * rlEng;
-      railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)} × ${rlEng} engineer${rlEng !== 1 ? 's' : ''}`;
+      railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)} × ${rlEng} engineers`;
       console.log(`[det-engine] Railing install: totalRailingM=${totalRailingM}m → ${rlDays} days × ${rlEng} engineers = £${Math.round(railingInstallCost)}`);
       allComponentAccessories.push({ name: railingInstallLabel, amount: Math.round(railingInstallCost) });
     }
@@ -633,6 +634,12 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     console.log('RAILING INSTALL COST:', Math.round(railingInstallCost));
     console.log('TOTAL INSTALL COST:', totalInstallCost);
 
+    // For mixed jobs, show a clear component summary rather than a single DB job type name
+    const hasMixedComponents = railingComps.length > 0 && primaryGateComp != null;
+    const mixedJobLabel = hasMixedComponents
+      ? `Mixed: ${primaryGateComp!.product_type.replace(/_/g, ' ')} + railings`
+      : bestGateJT?.job_type ?? null;
+
     const breakdownMulti: DeterministicBreakdown = {
       product_supply: Math.round(totalSupply),
       manufacture: 0,
@@ -644,7 +651,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
       price_low: priceLowMulti,
       price_high: priceHighMulti,
       minimum_applied: priceLowMulti > rawLowMulti ? minimum : null,
-      job_type_matched: bestGateJT?.job_type ?? null,
+      job_type_matched: mixedJobLabel,
       product_matched: primaryComp?.design_name ?? null,
       notes: componentBreakdowns.flatMap((cb) => cb.notes),
       component_breakdowns: componentBreakdowns,
@@ -966,7 +973,7 @@ Return JSON only:
   } else if (spec.product_type.includes('railing')) {
     const lengthM = spec.length_m ?? 0;
     effectiveInstallDays = getRailingInstallDays(lengthM);
-    effectiveEngineers = lengthM > 10 ? 2 : 1;
+    effectiveEngineers = 2; // railing install always requires 2 engineers
   } else {
     effectiveInstallDays = bestJobType?.install_days ?? 0;
     effectiveEngineers = bestJobType?.engineers_required ?? 1;
