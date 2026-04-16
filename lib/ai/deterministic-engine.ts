@@ -432,8 +432,33 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
           compNotes.push(
             comp.price_per_metre
               ? `${lengthM}m × £${ratePerM}/m (customer-stated rate)`
-              : `${lengthM}m × £${ratePerM}/m (prefab railings placeholder rate)`
+              : `Prefab railings supply (${lengthM}m × £${ratePerM}): £${compSupply}`
           );
+
+          // Manufacture labour for prefab/bespoke railings
+          if (comp.product_type === 'prefab_railings' || comp.product_type === 'railings') {
+            let mfgDays: number;
+            if (lengthM <= 10) mfgDays = 0.5;
+            else if (lengthM <= 20) mfgDays = 1;
+            else if (lengthM <= 30) mfgDays = 2;
+            else if (lengthM <= 40) mfgDays = 3;
+            else mfgDays = 4;
+            const mfgCost = Math.round(mfgDays * fabricationRate);
+            compAccessories.push({
+              name: `Railing fabrication/adjustment (${mfgDays} days × £${fabricationRate})`,
+              amount: mfgCost,
+            });
+          }
+
+          // Postcrete for railing posts
+          if (comp.has_posts !== false) {
+            const postCount = Math.ceil(lengthM / 2.5);
+            const postcreteAmount = postCount * 12;
+            compAccessories.push({
+              name: `Postcrete (railing posts ${postCount} posts)`,
+              amount: postcreteAmount,
+            });
+          }
         } else {
           compNotes.push('Railing length not specified — supply cost £0');
         }
@@ -442,14 +467,30 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
       // Gate accessories: posts
       if (isGateComp && comp.has_posts !== false) {
         const postCount = isDrivewayComp ? 2 : 1;
-        const post = isDrivewayComp
-          ? findAccItem(/large.*post|post.*large/i)
-          : findAccItem(/gate.*post|post.*gate/i);
-        if (post) {
+        if (isPedestrianComp && comp.material !== 'aluminium') {
+          // Iron pedestrian gate — fixed £180 per post (not aluminium post price)
+          const ironPostPrice = 180;
           compAccessories.push({
-            name: `Gate post${postCount > 1 ? 's' : ''} × ${postCount}`,
-            amount: post.helions_price * postCount,
+            name: `Gate post × ${postCount}`,
+            amount: ironPostPrice * postCount,
           });
+        } else {
+          const post = isDrivewayComp
+            ? findAccItem(/large.*post|post.*large/i)
+            : findAccItem(/gate.*post|post.*gate/i);
+          if (post) {
+            compAccessories.push({
+              name: `Gate post${postCount > 1 ? 's' : ''} × ${postCount}`,
+              amount: post.helions_price * postCount,
+            });
+          }
+        }
+
+        // Concrete allowance — not for brick-to-brick installations
+        if (isDrivewayComp) {
+          compAccessories.push({ name: 'Concrete allowance (driveway posts)', amount: 65 * 2 });
+        } else if (isPedestrianComp) {
+          compAccessories.push({ name: 'Concrete allowance (pedestrian posts)', amount: 45 * 1 });
         }
       }
 
@@ -774,6 +815,18 @@ Return JSON only:
   console.log('PRODUCT QUERY:', `width >= ${spec.width_mm}, height >= ${spec.height_mm}`);
   console.log('PRODUCT FOUND:', products[0]?.design_name, products[0]?.width_mm, products[0]?.height_mm, products[0]?.price_gbp);
 
+  // ── Prefab railings supply fallback ───────────────────────────────────────
+  // Applies only to the single-product path; multi-component path handles railings per component.
+  if (spec.product_type === 'prefab_railings' && !productFound) {
+    const lengthM = spec.length_m ?? 0;
+    const supplyRate = 80; // default prefab railings rate; customer-stated rate not captured on top-level spec
+    if (lengthM > 0) {
+      productSupplyCost = Math.round(lengthM * supplyRate);
+      productFound = true;
+      productNotes.push(`Prefab railings supply (${lengthM}m × £${supplyRate}): £${productSupplyCost}`);
+    }
+  }
+
   // ── Step 3: Job type matching ─────────────────────────────────────────────
   type JobTypeRow = {
     job_type: string;
@@ -934,11 +987,29 @@ Return JSON only:
   const isPedestrianGate = spec.product_type.includes('pedestrian');
 
   if (isGateProduct) {
-    // Driveway gates always use Large posts; other gate types use any gate post
-    const post = isDrivewayGate
-      ? findAcc(/large.*post|post.*large/i)
-      : findAcc(/gate.*post|post.*gate/i);
-    if (post) accessories.push({ name: `Gate posts × 2`, amount: post.helions_price * 2 });
+    // Driveway gates: Large posts from accessories_pricing.
+    // Iron pedestrian gates: fixed £180/post (not the aluminium post price).
+    // Aluminium pedestrian gates: acc lookup.
+    if (isPedestrianGate && !isAluminium) {
+      const ironPostPrice = 180;
+      accessories.push({ name: 'Gate post × 1', amount: ironPostPrice });
+    } else {
+      const post = isDrivewayGate
+        ? findAcc(/large.*post|post.*large/i)
+        : findAcc(/gate.*post|post.*gate/i);
+      if (post) accessories.push({ name: `Gate posts × 2`, amount: post.helions_price * 2 });
+    }
+
+    // Concrete allowance — not for brick-to-brick installations
+    if (spec.has_posts !== false) {
+      if (isDrivewayGate) {
+        const concreteAmount = 65 * 2;
+        accessories.push({ name: 'Concrete allowance (driveway posts)', amount: concreteAmount });
+      } else if (isPedestrianGate) {
+        const concreteAmount = 45 * 1;
+        accessories.push({ name: 'Concrete allowance (pedestrian posts)', amount: concreteAmount });
+      }
+    }
 
     if (isElectric) {
       const fob = findAcc(/remote.*fob|fob/i);
@@ -990,6 +1061,40 @@ Return JSON only:
         console.log('CUSTOM SIZE ITEM:', customSizeRow?.item_name, customSizeRow?.helions_price);
         accessories.push({ name: 'Custom size fee', amount: customSizeAmount });
       }
+    }
+  }
+
+  // Prefab railings manufacture labour
+  if (spec.product_type === 'prefab_railings' || spec.product_type === 'railings') {
+    const lengthM = spec.length_m ?? 0;
+    if (lengthM > 0) {
+      let mfgDays: number;
+      if (lengthM <= 10) mfgDays = 0.5;
+      else if (lengthM <= 20) mfgDays = 1;
+      else if (lengthM <= 30) mfgDays = 2;
+      else if (lengthM <= 40) mfgDays = 3;
+      else mfgDays = 4;
+      const mfgCost = Math.round(mfgDays * fabricationRate);
+      accessories.push({
+        name: `Railing fabrication/adjustment (${mfgDays} days × £${fabricationRate})`,
+        amount: mfgCost,
+      });
+    }
+  }
+
+  // Postcrete for railing posts
+  if (
+    (spec.product_type === 'railings' || spec.product_type === 'prefab_railings' || spec.product_type === 'wall_top_railings') &&
+    spec.has_posts !== false
+  ) {
+    const lengthM = spec.length_m ?? 0;
+    if (lengthM > 0) {
+      const postCount = Math.ceil(lengthM / 2.5);
+      const postcreteAmount = postCount * 12;
+      accessories.push({
+        name: `Postcrete (railing posts ${postCount} posts)`,
+        amount: postcreteAmount,
+      });
     }
   }
 
