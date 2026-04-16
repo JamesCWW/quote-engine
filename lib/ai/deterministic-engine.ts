@@ -45,6 +45,8 @@ export interface ExtractedSpec {
   items: Array<{ width_mm: number | null; height_mm: number | null }> | null;
   has_posts: boolean | null;
   components: JobComponent[] | null;
+  stated_install_days: number | null;
+  stated_engineers: number | null;
   confidence_per_field: Record<string, 'confirmed' | 'assumed' | 'unknown'>;
 }
 
@@ -101,6 +103,8 @@ Return ONLY valid JSON with this exact shape:
   "quantity": number | null,
   "items": [{"width_mm": number | null, "height_mm": number | null}] | null,
   "has_posts": true | false | null,
+  "stated_install_days": number | null,
+  "stated_engineers": number | null,
   "components": [
     {
       "product_type": "iron_driveway_gates" | "aluminium_driveway_gates" | "iron_pedestrian_gate" | "aluminium_pedestrian_gate" | "railings" | "prefab_railings" | "wall_top_railings" | "handrails" | "juliette_balcony" | "unknown",
@@ -148,6 +152,8 @@ Conversion rules:
 - quantity: number of gates/units requested. Set to 2 if "pair", "two", "both" mentioned. Default null (treated as 1).
 - items: if multiple sets of dimensions are listed, output each as an object. If only one set (or none), set to null. width_mm and height_mm in each item use the same mm conversion rules.
 - has_posts: true if the enquiry mentions posts, gate posts, or concrete-in posts. false if "brick to brick" is mentioned (no posts needed). null if not mentioned.
+- stated_install_days: if the summary or customer explicitly states the number of install days (e.g. "1 day for 2 engineers", "2-day install"), extract that number. null if not mentioned.
+- stated_engineers: if explicitly stated alongside stated_install_days (e.g. "1 day for 2 engineers"), extract the engineer count. null if not mentioned.
 - prefab_railings: use this type for prefabricated / panel railings sold by length; "railings" is for bespoke/custom
 - price_per_metre: if the customer states a per-metre price for railings, capture it here (in GBP)
 
@@ -266,6 +272,25 @@ function findSmallestFittingProduct(
   });
   console.log(`[det-engine] findSmallestFittingProduct: no fitting product — using largest available ${sorted[0].width_mm ?? '?'}mm × ${sorted[0].height_mm ?? '?'}mm`);
   return sorted[0];
+}
+
+// ── Railing install/manufacture day tables ────────────────────────────────
+
+function getRailingInstallDays(lengthM: number): number {
+  if (lengthM < 5) return 0.5;
+  if (lengthM <= 10) return 1;
+  if (lengthM <= 20) return 4;
+  if (lengthM <= 30) return 6;
+  if (lengthM <= 40) return 8;
+  return 10;
+}
+
+function getRailingManufactureDays(lengthM: number): number {
+  if (lengthM <= 10) return 0.5;
+  if (lengthM <= 20) return 1;
+  if (lengthM <= 30) return 2;
+  if (lengthM <= 40) return 3;
+  return 4;
 }
 
 // ── Main engine ────────────────────────────────────────────────────────────
@@ -441,12 +466,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
 
           // Manufacture labour for prefab/bespoke railings
           if (comp.product_type === 'prefab_railings' || comp.product_type === 'railings') {
-            let mfgDays: number;
-            if (lengthM <= 10) mfgDays = 0.5;
-            else if (lengthM <= 20) mfgDays = 1;
-            else if (lengthM <= 30) mfgDays = 2;
-            else if (lengthM <= 40) mfgDays = 3;
-            else mfgDays = 4;
+            const mfgDays = getRailingManufactureDays(lengthM);
             const mfgCost = Math.round(mfgDays * fabricationRate);
             compAccessories.push({
               name: `Railing fabrication/adjustment (${mfgDays} days × £${fabricationRate})`,
@@ -545,30 +565,24 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
       }
     }
 
-    const gateInstallDays = bestGateJT?.install_days ?? 0;
-    const gateEngineers = bestGateJT?.engineers_required ?? 1;
+    const gateInstallDays = spec.stated_install_days != null
+      ? spec.stated_install_days
+      : (bestGateJT?.install_days ?? 0);
+    const gateEngineers = spec.stated_install_days != null
+      ? (spec.stated_engineers ?? 2)
+      : (bestGateJT?.engineers_required ?? 1);
     const gateInstallCost = gateInstallDays * installRate * gateEngineers;
 
-    // Railing installation: select job type based on total railing length
+    // Railing installation: hardcoded table by total railing length
     let railingInstallCost = 0;
     let railingInstallLabel = '';
-    let railingJT: typeof allJobTypes[0] | undefined;
     if (railingComps.length > 0) {
       const totalRailingM = railingComps.reduce((s, c) => s + (c.length_m ?? 0), 0);
-      railingJT = totalRailingM <= 10
-        ? allJobTypes.find((jt) => /up to 10/i.test(jt.job_type) && /railing/i.test(jt.job_type))
-        : allJobTypes.find((jt) => /11 to 20/i.test(jt.job_type) && /railing/i.test(jt.job_type));
-      console.log(`[det-engine] Railing install: totalRailingM=${totalRailingM}m → job_type="${railingJT?.job_type ?? 'fallback (no match)'}"`);
-      if (railingJT) {
-        const rlDays = railingJT.install_days ?? 1;
-        const rlEng = railingJT.engineers_required ?? 1;
-        railingInstallCost = rlDays * installRate * rlEng;
-        railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)} × ${rlEng} engineer${rlEng !== 1 ? 's' : ''}`;
-      } else {
-        const rlDays = Math.max(1, Math.ceil(totalRailingM / 10));
-        railingInstallCost = rlDays * installRate;
-        railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)}`;
-      }
+      const rlDays = getRailingInstallDays(totalRailingM);
+      const rlEng = totalRailingM > 10 ? 2 : 1;
+      railingInstallCost = rlDays * installRate * rlEng;
+      railingInstallLabel = `Railing install: ${rlDays} day${rlDays !== 1 ? 's' : ''} × £${installRate.toFixed(2)} × ${rlEng} engineer${rlEng !== 1 ? 's' : ''}`;
+      console.log(`[det-engine] Railing install: totalRailingM=${totalRailingM}m → ${rlDays} days × ${rlEng} engineers = £${Math.round(railingInstallCost)}`);
       allComponentAccessories.push({ name: railingInstallLabel, amount: Math.round(railingInstallCost) });
     }
 
@@ -583,7 +597,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     }
 
     const accessoriesTotal = allComponentAccessories.reduce((s, a) => s + a.amount, 0);
-    const minimum = (bestGateJT?.minimum_value ?? rates?.minimum_job_value) ?? 0;
+    const minimum = rates?.minimum_job_value ?? 0;
 
     // basePrice includes supply + gate install + all accessories (incl. railing install + design fee)
     const basePrice = totalSupply + gateInstallCostRounded + accessoriesTotal;
@@ -615,8 +629,8 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
 
     const totalInstallCost = gateInstallCostRounded + Math.round(railingInstallCost);
 
-    console.log('GATE INSTALL:', bestGateJT?.job_type, bestGateJT?.install_days, 'days');
-    console.log('RAILING INSTALL:', railingJT?.job_type, railingJT?.install_days, 'days');
+    console.log('GATE INSTALL:', bestGateJT?.job_type, gateInstallDays, 'days');
+    console.log('RAILING INSTALL COST:', Math.round(railingInstallCost));
     console.log('TOTAL INSTALL COST:', totalInstallCost);
 
     const breakdownMulti: DeterministicBreakdown = {
@@ -924,18 +938,9 @@ Return JSON only:
     }
   }
 
-  // Railing job type override: select based on length (up to 10m vs 11–20m)
+  // Railing install/manufacture: use hardcoded table — no job type needed
   if (spec.product_type.includes('railing')) {
-    const lengthM = spec.length_m ?? 0;
-    const targetJT = lengthM <= 10
-      ? allJobTypes.find((jt) => /up to 10/i.test(jt.job_type) && /railing/i.test(jt.job_type))
-      : allJobTypes.find((jt) => /11 to 20/i.test(jt.job_type) && /railing/i.test(jt.job_type));
-    if (targetJT) {
-      console.log(
-        `[det-engine] Railing job type override: length=${lengthM}m → "${targetJT.job_type}" (install_days=${targetJT.install_days}, engineers=${targetJT.engineers_required})`
-      );
-      bestJobType = targetJT;
-    }
+    bestJobType = null;
   }
 
   console.log(
@@ -949,11 +954,24 @@ Return JSON only:
 
   // Multi-pedestrian gate (qty >= 2): 1 day, 2 engineers, no quantity multiplication
   const isMultiPedestrianGate = quantity >= 2 && spec.product_type.includes('pedestrian');
-  const effectiveInstallDays = isMultiPedestrianGate ? 1 : (bestJobType?.install_days ?? 0);
-  const effectiveEngineers = isMultiPedestrianGate ? 2 : (bestJobType?.engineers_required ?? 1);
-  const installCost = bestJobType
-    ? effectiveInstallDays * installRate * effectiveEngineers
-    : 0;
+  let effectiveInstallDays: number;
+  let effectiveEngineers: number;
+
+  if (spec.stated_install_days != null) {
+    effectiveInstallDays = spec.stated_install_days;
+    effectiveEngineers = spec.stated_engineers ?? 2;
+  } else if (isMultiPedestrianGate) {
+    effectiveInstallDays = 1;
+    effectiveEngineers = 2;
+  } else if (spec.product_type.includes('railing')) {
+    const lengthM = spec.length_m ?? 0;
+    effectiveInstallDays = getRailingInstallDays(lengthM);
+    effectiveEngineers = lengthM > 10 ? 2 : 1;
+  } else {
+    effectiveInstallDays = bestJobType?.install_days ?? 0;
+    effectiveEngineers = bestJobType?.engineers_required ?? 1;
+  }
+  const installCost = effectiveInstallDays * installRate * effectiveEngineers;
 
   // ── Manufacture cost — only for bespoke jobs (no product match) ────────────
   // Named gate products (aluminium AND iron) include all fabrication cost in their
@@ -1106,12 +1124,7 @@ Return JSON only:
   if (spec.product_type === 'prefab_railings' || spec.product_type === 'railings') {
     const lengthM = spec.length_m ?? 0;
     if (lengthM > 0) {
-      let mfgDays: number;
-      if (lengthM <= 10) mfgDays = 0.5;
-      else if (lengthM <= 20) mfgDays = 1;
-      else if (lengthM <= 30) mfgDays = 2;
-      else if (lengthM <= 40) mfgDays = 3;
-      else mfgDays = 4;
+      const mfgDays = getRailingManufactureDays(lengthM);
       const mfgCost = Math.round(mfgDays * fabricationRate);
       accessories.push({
         name: `Railing fabrication/adjustment (${mfgDays} days × £${fabricationRate})`,
@@ -1145,7 +1158,7 @@ Return JSON only:
   const accessoriesTotal = accessories.reduce((sum, a) => sum + a.amount, 0);
 
   // ── Step 5: Minimum value ──────────────────────────────────────────────────
-  const minimum = bestJobType?.minimum_value ?? rates?.minimum_job_value ?? 0;
+  const minimum = rates?.minimum_job_value ?? 0;
 
   // ── Step 6: Confidence score ───────────────────────────────────────────────
   const noDimensions = !hasDimensions;
