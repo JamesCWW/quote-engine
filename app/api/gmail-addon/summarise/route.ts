@@ -62,7 +62,7 @@ ${safeThreadText}`,
       const result = JSON.parse(jsonMatch[0]);
       summary = result.summary || '';
       components_detected = Array.isArray(result.components_detected) ? result.components_detected : [];
-    } catch (_e) {
+    } catch {
       const content = jsonMatch[0];
       const summaryMatch = content.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/s);
       const componentsMatch = content.match(/"components_detected"\s*:\s*(\[.*?\])/s);
