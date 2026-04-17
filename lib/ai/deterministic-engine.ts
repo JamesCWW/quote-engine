@@ -44,6 +44,7 @@ export interface ExtractedSpec {
   quantity: number | null;
   items: Array<{ width_mm: number | null; height_mm: number | null }> | null;
   has_posts: boolean | null;
+  stated_post_count: number | null;
   components: JobComponent[] | null;
   stated_install_days: number | null;
   stated_engineers: number | null;
@@ -103,6 +104,7 @@ Return ONLY valid JSON with this exact shape:
   "quantity": number | null,
   "items": [{"width_mm": number | null, "height_mm": number | null}] | null,
   "has_posts": true | false | null,
+  "stated_post_count": number | null,
   "stated_install_days": number | null,
   "stated_engineers": number | null,
   "components": [
@@ -152,6 +154,7 @@ Conversion rules:
 - quantity: number of gates/units requested. Set to 2 if "pair", "two", "both" mentioned. Default null (treated as 1).
 - items: if multiple sets of dimensions are listed, output each as an object. If only one set (or none), set to null. width_mm and height_mm in each item use the same mm conversion rules.
 - has_posts: true if the enquiry mentions posts, gate posts, or concrete-in posts. false if "brick to brick" is mentioned (no posts needed). null if not mentioned.
+- stated_post_count: if the enquiry explicitly states a total post count (e.g. "6 posts", "6 posts total", "with 6 gate posts"), extract that number. null if not mentioned.
 - stated_install_days: if the summary or customer explicitly states the number of install days (e.g. "1 day for 2 engineers", "2-day install"), extract that number. null if not mentioned.
 - stated_engineers: if explicitly stated alongside stated_install_days (e.g. "1 day for 2 engineers"), extract the engineer count. null if not mentioned.
 - prefab_railings: use this type for prefabricated / panel railings sold by length; "railings" is for bespoke/custom
@@ -491,7 +494,10 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
 
       // Gate accessories: posts
       if (isGateComp && comp.has_posts !== false) {
-        const postCount = isDrivewayComp ? 2 : 1;
+        // Driveway: 2 posts per unit. Pedestrian: 2 posts per gate unless explicitly stated.
+        const postCount = isDrivewayComp
+          ? 2
+          : (spec.stated_post_count ?? 2 * compQty);
         if (isPedestrianComp && comp.material !== 'aluminium') {
           // Iron pedestrian gate — fixed £180 per post (not aluminium post price)
           const ironPostPrice = 180;
@@ -515,7 +521,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
         if (isDrivewayComp) {
           compAccessories.push({ name: 'Concrete allowance (driveway posts)', amount: 65 * 2 });
         } else if (isPedestrianComp) {
-          compAccessories.push({ name: 'Concrete allowance (pedestrian posts)', amount: 45 * 1 });
+          compAccessories.push({ name: 'Concrete allowance (pedestrian posts)', amount: 45 * postCount });
         }
       }
 
@@ -561,6 +567,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
         if (isElectComp && /electric|automat/.test(jtl)) score += 3;
         if (!isElectComp && primaryGateComp.is_electric !== null && !/electric|automat/.test(jtl)) score += 2;
         if (primaryGateComp.product_type.includes('pedestrian') && /pedestrian/.test(jtl)) score += 3;
+        if (primaryGateComp.product_type.includes('pedestrian') && /driveway/.test(jtl)) score -= 10;
         if (primaryGateComp.product_type.includes('driveway') && /driveway/.test(jtl)) score += 2;
         if (score > bestScore) { bestScore = score; bestGateJT = jt; }
       }
@@ -910,6 +917,7 @@ Return JSON only:
     if (isElectric && /electric|automat/.test(jtLower)) score += 3;
     if (!isElectric && spec.is_electric !== null && !/electric|automat/.test(jtLower)) score += 2;
     if (spec.product_type.includes('pedestrian') && /pedestrian/.test(jtLower)) score += 3;
+    if (spec.product_type.includes('pedestrian') && /driveway/.test(jtLower)) score -= 10;
     if (
       (spec.product_type.includes('driveway') || spec.product_type.includes('gates')) &&
       /driveway/.test(jtLower)
@@ -1053,9 +1061,11 @@ Return JSON only:
     // Driveway gates: Large posts from accessories_pricing.
     // Iron pedestrian gates: fixed £180/post (not the aluminium post price).
     // Aluminium pedestrian gates: acc lookup.
+    // Pedestrian post count: 2 posts per gate unless explicitly stated in enquiry.
+    const pedestrianPostCount = spec.stated_post_count ?? 2 * quantity;
     if (isPedestrianGate && !isAluminium) {
       const ironPostPrice = 180;
-      accessories.push({ name: 'Gate post × 1', amount: ironPostPrice });
+      accessories.push({ name: `Gate post × ${pedestrianPostCount}`, amount: ironPostPrice * pedestrianPostCount });
     } else {
       const post = isDrivewayGate
         ? findAcc(/large.*post|post.*large/i)
@@ -1069,8 +1079,7 @@ Return JSON only:
         const concreteAmount = 65 * 2;
         accessories.push({ name: 'Concrete allowance (driveway posts)', amount: concreteAmount });
       } else if (isPedestrianGate) {
-        const concreteAmount = 45 * 1;
-        accessories.push({ name: 'Concrete allowance (pedestrian posts)', amount: concreteAmount });
+        accessories.push({ name: 'Concrete allowance (pedestrian posts)', amount: 45 * pedestrianPostCount });
       }
     }
 
