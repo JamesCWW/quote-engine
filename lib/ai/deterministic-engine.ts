@@ -502,7 +502,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
           // Iron pedestrian gate — fixed £180 per post (not aluminium post price)
           const ironPostPrice = 180;
           compAccessories.push({
-            name: `Gate post × ${postCount}`,
+            name: postCount > 1 ? `Gate posts (Qty: ${postCount})` : 'Gate post',
             amount: ironPostPrice * postCount,
           });
         } else {
@@ -511,7 +511,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
             : findAccItem(/gate.*post|post.*gate/i);
           if (post) {
             compAccessories.push({
-              name: `Gate post${postCount > 1 ? 's' : ''} × ${postCount}`,
+              name: postCount > 1 ? `Gate posts (Qty: ${postCount})` : 'Gate post',
               amount: post.helions_price * postCount,
             });
           }
@@ -528,7 +528,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
       // Automation accessories (electric gates)
       if (isGateComp && isElectricComp) {
         const fob = findAccItem(/remote.*fob|fob/i);
-        if (fob) compAccessories.push({ name: 'Remote fobs × 2', amount: fob.helions_price * 2 });
+        if (fob) compAccessories.push({ name: 'Remote fobs (Qty: 2)', amount: fob.helions_price * 2 });
         const motorKit = findAccItem(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i);
         if (motorKit) compAccessories.push({ name: motorKit.item_name, amount: motorKit.helions_price });
         const photocell = findAccItem(/photocell|dir\b/i);
@@ -1080,12 +1080,12 @@ Return JSON only:
     const pedestrianPostCount = spec.stated_post_count ?? 2 * quantity;
     if (isPedestrianGate && !isAluminium) {
       const ironPostPrice = 180;
-      accessories.push({ name: `Gate post × ${pedestrianPostCount}`, amount: ironPostPrice * pedestrianPostCount });
+      accessories.push({ name: pedestrianPostCount > 1 ? `Gate posts (Qty: ${pedestrianPostCount})` : 'Gate post', amount: ironPostPrice * pedestrianPostCount });
     } else {
       const post = isDrivewayGate
         ? findAcc(/large.*post|post.*large/i)
         : findAcc(/gate.*post|post.*gate/i);
-      if (post) accessories.push({ name: `Gate posts × 2`, amount: post.helions_price * 2 });
+      if (post) accessories.push({ name: 'Gate posts (Qty: 2)', amount: post.helions_price * 2 });
     }
 
     // Concrete allowance — not for brick-to-brick installations
@@ -1100,7 +1100,7 @@ Return JSON only:
 
     if (isElectric) {
       const fob = findAcc(/remote.*fob|fob/i);
-      if (fob) accessories.push({ name: `Remote fobs × 2`, amount: fob.helions_price * 2 });
+      if (fob) accessories.push({ name: 'Remote fobs (Qty: 2)', amount: fob.helions_price * 2 });
 
       const motorKit = findAcc(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i);
       if (motorKit) accessories.push({ name: motorKit.item_name, amount: motorKit.helions_price });
