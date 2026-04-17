@@ -58,11 +58,13 @@ function buildLineItems(breakdown: DetBreakdown | undefined): LineItem[] {
   const items: LineItem[] = [];
   if (breakdown.product_supply) items.push({ key: 'product_supply', label: 'Product supply', amount: breakdown.product_supply });
   if (breakdown.manufacture)    items.push({ key: 'manufacture',    label: 'Manufacture',    amount: breakdown.manufacture });
-  // design_fee excluded from customer-facing view
+  // design_fee excluded from customer-facing view (shown as checkbox instead)
   if (breakdown.accessories?.length) {
-    breakdown.accessories.forEach((a, i) =>
-      items.push({ key: `accessory_${i}`, label: cleanLabel(a.name), amount: a.amount })
-    );
+    breakdown.accessories
+      .filter(a => !a.name.toLowerCase().includes('design fee') && !a.name.toLowerCase().includes('design_fee'))
+      .forEach((a, i) =>
+        items.push({ key: `accessory_${i}`, label: cleanLabel(a.name).replace(/×/g, 'x'), amount: a.amount })
+      );
   }
   if (breakdown.installation)   items.push({ key: 'installation',   label: 'Installation',   amount: breakdown.installation });
   return items;
