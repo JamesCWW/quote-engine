@@ -64,21 +64,17 @@ ${safeThreadText}`,
       components_detected = Array.isArray(result.components_detected) ? result.components_detected : [];
     } catch {
       const content = jsonMatch[0];
-      const summaryMatch = content.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/s);
-      const componentsMatch = content.match(/"components_detected"\s*:\s*(\[.*?\])/s);
+      const summaryStart = content.indexOf('"summary"');
 
-      if (summaryMatch) {
-        summary = summaryMatch[1];
-        try {
-          components_detected = componentsMatch ? JSON.parse(componentsMatch[1]) : [];
-        } catch {
-          components_detected = [];
+      if (summaryStart !== -1) {
+        const valueStart = content.indexOf('"', summaryStart + 10) + 1;
+        const valueEnd = content.indexOf('"', valueStart);
+        if (valueEnd > valueStart) {
+          summary = content.slice(valueStart, valueEnd);
         }
-      } else {
-        console.error('[gmail-addon/summarise] Failed to parse Haiku JSON:', text);
-        summary = text.replace(/[{}"\[\]]/g, '').trim();
-        components_detected = [];
       }
+
+      console.error('[gmail-addon/summarise] Haiku returned invalid JSON, using fallback');
     }
 
     return NextResponse.json({ summary, components_detected });
