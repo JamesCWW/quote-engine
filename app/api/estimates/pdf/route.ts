@@ -28,6 +28,8 @@ interface PdfRequestBody {
   project_summary: string;
   price_low: number;
   price_high: number;
+  price_mode?: 'range' | 'single';
+  single_price?: number;
   breakdown?: DetBreakdown;
   components?: unknown[];
   valid_days?: number;
@@ -70,6 +72,8 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     project_summary,
     price_low,
     price_high,
+    price_mode = 'range',
+    single_price,
     breakdown,
     valid_days = 30,
   } = body;
@@ -323,24 +327,27 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     if (breakdown.contingency) tableRow('Contingency (5%)', breakdown.contingency);
   }
 
-  // ── ESTIMATE RANGE ────────────────────────────────────────────────────────────
+  // ── ESTIMATE TOTAL / RANGE ────────────────────────────────────────────────────
 
   cursor += 4;
   drawHRule(cursor);
   cursor += 4;
 
-  const rangeLabel = 'ESTIMATE RANGE (ex. VAT)';
-  const rangeValue = `${fmtGBP(price_low)} – ${fmtGBP(price_high)}`;
+  const isSingle = price_mode === 'single';
+  const totalLabel = isSingle ? 'ESTIMATE (ex. VAT)' : 'ESTIMATE RANGE (ex. VAT)';
+  const totalValue = isSingle
+    ? fmtGBP(single_price ?? price_low)
+    : `${fmtGBP(price_low)} – ${fmtGBP(price_high)}`;
   const rangeH = 30;
 
   drawRect(ML, cursor, PW, rangeH, cCharcoal);
 
-  page.drawText(rangeLabel, {
+  page.drawText(totalLabel, {
     x: ML + 8, y: H - cursor - 20,
     font: fontBold, size: 11, color: cWhite,
   });
-  const rangeValW = fontBold.widthOfTextAtSize(rangeValue, 11);
-  page.drawText(rangeValue, {
+  const rangeValW = fontBold.widthOfTextAtSize(totalValue, 11);
+  page.drawText(totalValue, {
     x: ML + PW - rangeValW - 8, y: H - cursor - 20,
     font: fontBold, size: 11, color: cWhite,
   });
