@@ -21,6 +21,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'thread_text and tenant_id are required' }, { status: 400 });
   }
 
+  const safeThreadText = thread_text
+    .slice(0, 3000)
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ');
+
   try {
     const message = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
@@ -32,12 +36,13 @@ export async function POST(req: NextRequest) {
 Write a 2-3 sentence project summary in plain English covering: what products are needed, any dimensions mentioned, installation requirements, and anything notable.
 Be specific about what IS mentioned and honest about what is NOT mentioned.
 Then list the product types detected as an array.
-Return JSON only, no other text: { "summary": string, "components_detected": string[] }
+Return ONLY a valid JSON object. No markdown, no backticks, no explanation. The summary field must not contain unescaped quotes or special characters. Use single quotes within the summary text if needed, never double quotes.
+Format: { "summary": string, "components_detected": string[] }
 
 Valid component values: aluminium_driveway_gates, mild_steel_driveway_gates, iron_driveway_gates, aluminium_pedestrian_gate, mild_steel_pedestrian_gate, railings, handrails, automation, access_control
 
 Email thread:
-${thread_text.slice(0, 4000)}`,
+${safeThreadText}`,
         },
       ],
     });
@@ -50,12 +55,33 @@ ${thread_text.slice(0, 4000)}`,
       return NextResponse.json({ error: 'Failed to parse AI response' }, { status: 500 });
     }
 
-    const result = JSON.parse(jsonMatch[0]);
+    let summary = '';
+    let components_detected: string[] = [];
 
-    return NextResponse.json({
-      summary: result.summary || '',
-      components_detected: Array.isArray(result.components_detected) ? result.components_detected : [],
-    });
+    try {
+      const result = JSON.parse(jsonMatch[0]);
+      summary = result.summary || '';
+      components_detected = Array.isArray(result.components_detected) ? result.components_detected : [];
+    } catch (e) {
+      const content = jsonMatch[0];
+      const summaryMatch = content.match(/"summary"\s*:\s*"((?:[^"\\]|\\.)*)"/s);
+      const componentsMatch = content.match(/"components_detected"\s*:\s*(\[.*?\])/s);
+
+      if (summaryMatch) {
+        summary = summaryMatch[1];
+        try {
+          components_detected = componentsMatch ? JSON.parse(componentsMatch[1]) : [];
+        } catch {
+          components_detected = [];
+        }
+      } else {
+        console.error('[gmail-addon/summarise] Failed to parse Haiku JSON:', text);
+        summary = text.replace(/[{}"\[\]]/g, '').trim();
+        components_detected = [];
+      }
+    }
+
+    return NextResponse.json({ summary, components_detected });
   } catch (error) {
     const err = error as Error;
     console.error('[gmail-addon/summarise] FAILED:', err.message);
