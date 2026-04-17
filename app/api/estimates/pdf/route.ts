@@ -317,7 +317,12 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     if (breakdown.manufacture)    tableRow('Manufacture', breakdown.manufacture);
     // design_fee is intentionally excluded from the customer-facing PDF
     if (breakdown.accessories?.length) {
-      breakdown.accessories.forEach((a) => tableRow(`  ${a.name}`, a.amount));
+      breakdown.accessories
+        .filter((a) => {
+          const n = a.name.toLowerCase();
+          return !n.includes('design fee') && !n.includes('design_fee');
+        })
+        .forEach((a) => tableRow(`  ${a.name}`, a.amount));
     }
     if (breakdown.installation)   tableRow('Installation', breakdown.installation);
     cursor += 4;
@@ -331,32 +336,75 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
 
   cursor += 4;
   drawHRule(cursor);
-  cursor += 4;
+  cursor += 10;
 
   const isSingle = price_mode === 'single';
-  const totalLabel = isSingle ? 'ESTIMATE (ex. VAT)' : 'ESTIMATE RANGE (ex. VAT)';
-  const totalValue = isSingle
-    ? fmtGBP(single_price ?? price_low)
-    : `${fmtGBP(price_low)} – ${fmtGBP(price_high)}`;
-  const rangeH = 30;
 
-  drawRect(ML, cursor, PW, rangeH, cCharcoal);
+  // ── VAT BREAKDOWN ─────────────────────────────────────────────────────────────
 
-  page.drawText(totalLabel, {
-    x: ML + 8, y: H - cursor - 20,
-    font: fontBold, size: 11, color: cWhite,
-  });
-  const rangeValW = fontBold.widthOfTextAtSize(totalValue, 11);
-  page.drawText(totalValue, {
-    x: ML + PW - rangeValW - 8, y: H - cursor - 20,
-    font: fontBold, size: 11, color: cWhite,
-  });
-  cursor += rangeH + 10;
+  const cVatGrey = rgb(0.55, 0.57, 0.60);
 
-  drawText('VAT at 20% will be added to the final invoice.', ML, cursor, {
-    size: 9, color: cMidGrey,
-  });
-  cursor += 20;
+  // Helper to draw a two-column row (label left, value right)
+  function vatRow(
+    label: string,
+    value: string,
+    opts: { bold?: boolean; size?: number; color?: ReturnType<typeof rgb> } = {}
+  ) {
+    const f    = opts.bold ? fontBold : fontReg;
+    const sz   = opts.size ?? 10;
+    const col  = opts.color ?? cCharcoal;
+    const valW = f.widthOfTextAtSize(value, sz);
+    page.drawText(label, { x: ML, y: H - cursor - sz, font: f, size: sz, color: col });
+    page.drawText(value, { x: ML + PW - valW, y: H - cursor - sz, font: f, size: sz, color: col });
+    cursor += sz * 1.7;
+  }
+
+  if (isSingle) {
+    const exVat  = single_price ?? price_low;
+    const vat    = Math.round(exVat * 0.2);
+    const incVat = exVat + vat;
+
+    vatRow('ESTIMATE (ex. VAT)', fmtGBP(exVat));
+    vatRow('VAT (20%)', fmtGBP(vat), { color: cVatGrey });
+
+    // Total inc VAT — dark background banner
+    cursor += 2;
+    drawRect(ML, cursor, PW, 32, cCharcoal);
+    const totalLabel_ = 'TOTAL (inc. VAT)';
+    const totalVal_   = fmtGBP(incVat);
+    const totalValW_  = fontBold.widthOfTextAtSize(totalVal_, 13);
+    page.drawText(totalLabel_, { x: ML + 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
+    page.drawText(totalVal_,   { x: ML + PW - totalValW_ - 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
+    cursor += 32;
+  } else {
+    const vatLow  = Math.round(price_low  * 0.2);
+    const vatHigh = Math.round(price_high * 0.2);
+    const incLow  = price_low  + vatLow;
+    const incHigh = price_high + vatHigh;
+
+    vatRow('ESTIMATE RANGE (ex. VAT)', `${fmtGBP(price_low)} – ${fmtGBP(price_high)}`);
+    vatRow('VAT (20%)', `${fmtGBP(vatLow)} – ${fmtGBP(vatHigh)}`, { color: cVatGrey });
+
+    // Total inc VAT — dark background banner
+    cursor += 2;
+    drawRect(ML, cursor, PW, 32, cCharcoal);
+    const totalLabel_ = 'TOTAL (inc. VAT)';
+    const totalVal_   = `${fmtGBP(incLow)} – ${fmtGBP(incHigh)}`;
+    const totalValW_  = fontBold.widthOfTextAtSize(totalVal_, 13);
+    page.drawText(totalLabel_, { x: ML + 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
+    page.drawText(totalVal_,   { x: ML + PW - totalValW_ - 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
+    cursor += 32;
+  }
+
+  if (profile?.vat_number) {
+    cursor += 6;
+    drawText(`VAT registration number: ${profile.vat_number}`, ML, cursor, {
+      size: 8, color: cMidGrey,
+    });
+    cursor += 14;
+  }
+
+  cursor += 14;
 
   // ── FOOTER ───────────────────────────────────────────────────────────────────
 
