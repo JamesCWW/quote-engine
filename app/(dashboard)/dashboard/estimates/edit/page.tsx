@@ -48,6 +48,11 @@ function fmtGBP(n: number) {
   return '£' + Math.round(n).toLocaleString('en-GB');
 }
 
+// Strip detail suffixes like ": 0.5 days × £523 × 2 engineers" or " (0.5 days × £507)"
+function cleanLabel(name: string): string {
+  return name.replace(/\s*[:(].*$/, '').trim();
+}
+
 function buildLineItems(breakdown: DetBreakdown | undefined): LineItem[] {
   if (!breakdown) return [];
   const items: LineItem[] = [];
@@ -56,7 +61,7 @@ function buildLineItems(breakdown: DetBreakdown | undefined): LineItem[] {
   // design_fee excluded from customer-facing view
   if (breakdown.accessories?.length) {
     breakdown.accessories.forEach((a, i) =>
-      items.push({ key: `accessory_${i}`, label: a.name, amount: a.amount })
+      items.push({ key: `accessory_${i}`, label: cleanLabel(a.name), amount: a.amount })
     );
   }
   if (breakdown.installation)   items.push({ key: 'installation',   label: 'Installation',   amount: breakdown.installation });
@@ -79,10 +84,12 @@ export default function EstimateEditPage() {
 
   // Section B — Line items
   const [lineItems, setLineItems] = useState<LineItem[]>([]);
-  const [designFee, setDesignFee] = useState(0);
+  const [includeDesignFee, setIncludeDesignFee] = useState(false);
+
+  const DESIGN_FEE = 220;
 
   // Derived totals
-  const subtotal    = lineItems.reduce((s, i) => s + i.amount, 0) + designFee;
+  const subtotal    = lineItems.reduce((s, i) => s + i.amount, 0);
   const contingency = Math.round(subtotal * 0.05);
   const total       = subtotal + contingency;
 
@@ -110,7 +117,7 @@ export default function EstimateEditPage() {
       setSummary(json.project_summary || '');
       const items = buildLineItems(json.breakdown);
       setLineItems(items);
-      setDesignFee(json.breakdown?.design_fee ?? 0);
+      setIncludeDesignFee(false);
       setPriceLow(json.price_low ?? 0);
       setPriceHigh(json.price_high ?? 0);
       setSinglePrice(Math.round(((json.price_low ?? 0) + (json.price_high ?? 0)) / 2));
@@ -138,11 +145,20 @@ export default function EstimateEditPage() {
     }
   }, [summary]);
 
-  // ── Section B: Update line item amount ────────────────────────────────────
+  // ── Section B: Update line item amount / design fee toggle ───────────────
 
   function updateAmount(key: string, value: string) {
     const num = parseFloat(value) || 0;
     setLineItems(prev => prev.map(item => item.key === key ? { ...item, amount: num } : item));
+  }
+
+  function handleDesignFeeToggle(checked: boolean) {
+    setIncludeDesignFee(checked);
+    setLineItems(prev => prev.map(item =>
+      item.key === 'product_supply'
+        ? { ...item, amount: item.amount + (checked ? DESIGN_FEE : -DESIGN_FEE) }
+        : item
+    ));
   }
 
   // ── Section D: Generate PDF ────────────────────────────────────────────────
@@ -153,8 +169,8 @@ export default function EstimateEditPage() {
     setGenError(null);
     setPdfUrl(null);
 
-    // Rebuild breakdown with edited values (keep design_fee for subtotal)
-    const updatedBreakdown: DetBreakdown = { design_fee: designFee > 0 ? designFee : undefined };
+    // Rebuild breakdown with edited values (design fee is absorbed into product_supply)
+    const updatedBreakdown: DetBreakdown = {};
 
     const productSupply = lineItems.find(i => i.key === 'product_supply');
     const manufacture   = lineItems.find(i => i.key === 'manufacture');
@@ -212,7 +228,7 @@ export default function EstimateEditPage() {
       const json: EstimateData = JSON.parse(atob(raw));
       setSummary(json.project_summary || '');
       setLineItems(buildLineItems(json.breakdown));
-      setDesignFee(json.breakdown?.design_fee ?? 0);
+      setIncludeDesignFee(false);
       setPriceLow(json.price_low ?? 0);
       setPriceHigh(json.price_high ?? 0);
       setSinglePrice(Math.round(((json.price_low ?? 0) + (json.price_high ?? 0)) / 2));
@@ -290,6 +306,16 @@ export default function EstimateEditPage() {
               </div>
             ))}
           </div>
+
+          <label className="flex items-center gap-2 cursor-pointer pt-1">
+            <input
+              type="checkbox"
+              checked={includeDesignFee}
+              onChange={e => handleDesignFeeToggle(e.target.checked)}
+              className="accent-gray-800 w-4 h-4"
+            />
+            <span className="text-sm text-gray-700">Include design fee (£{DESIGN_FEE}) in project cost</span>
+          </label>
 
           <div className="border-t border-gray-200 pt-3 space-y-1">
             <div className="flex justify-between text-sm text-gray-600">
