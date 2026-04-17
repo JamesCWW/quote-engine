@@ -788,14 +788,18 @@ function onShowPdfForm(event) {
     .build();
 }
 
-/** Generate PDF estimate and show download link. */
+/**
+ * Open the PDF editor page in the browser.
+ * Encodes all estimate data as a base64 JSON query parameter so the
+ * dashboard edit page can pre-populate every field.
+ */
 function onGeneratePdf(event) {
-  var f            = event.formInput || {};
-  var customerName = (f.pdf_customer_name || '').trim();
+  var f             = event.formInput || {};
+  var customerName  = (f.pdf_customer_name  || '').trim();
   var customerEmail = (f.pdf_customer_email || '').trim();
-  var q            = cacheGet_('quote');
-  var summary      = cacheGet_('summary') || '';
-  var p            = getProps_();
+  var q             = cacheGet_('quote');
+  var summary       = cacheGet_('summary') || '';
+  var p             = getProps_();
 
   if (!customerName) {
     return errorResponse_('Please enter the customer name.');
@@ -808,6 +812,7 @@ function onGeneratePdf(event) {
     var payload = {
       tenant_id:       p.tenantId,
       customer_name:   customerName,
+      customer_email:  customerEmail || undefined,
       project_summary: summary || 'See estimate details.',
       price_low:       q.price_low,
       price_high:      q.price_high,
@@ -815,36 +820,30 @@ function onGeneratePdf(event) {
       components:      q.components    || null,
       valid_days:      30,
     };
-    if (customerEmail) payload.customer_email = customerEmail;
 
-    var result = apiPost_('/api/estimates/pdf', payload);
-
-    if (result.code !== 200) {
-      return errorResponse_('PDF generation failed (' + result.code + '): ' + (result.body.error || 'Unknown error'));
-    }
-
-    var pdfUrl = result.body.url;
-    var pdfRef = result.body.ref || 'Estimate';
+    // base64-encode so it survives URL transmission
+    var encoded  = Utilities.base64Encode(JSON.stringify(payload));
+    var editUrl  = p.apiBase + '/dashboard/estimates/edit?data=' + encodeURIComponent(encoded);
 
     var card = CardService.newCardBuilder()
-      .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('PDF Ready'))
+      .setHeader(CardService.newCardHeader().setTitle('Helions Forge').setSubtitle('Edit PDF Estimate'))
       .addSection(
         CardService.newCardSection()
-          .addWidget(CardService.newTextParagraph().setText('✅ PDF estimate created for ' + customerName + '.'))
-          .addWidget(CardService.newKeyValue().setTopLabel('Reference').setContent(pdfRef))
+          .addWidget(CardService.newTextParagraph()
+            .setText('Open the estimate editor to review, edit the summary and costs, then generate the PDF.'))
           .addWidget(
             CardService.newTextButton()
-              .setText('📥  Download / View PDF')
+              .setText('📄  Open Estimate Editor')
               .setTextButtonStyle(CardService.TextButtonStyle.FILLED)
               .setOpenLink(
                 CardService.newOpenLink()
-                  .setUrl(pdfUrl)
+                  .setUrl(editUrl)
                   .setOpenAs(CardService.OpenAs.FULL_SIZE)
               )
           )
           .addWidget(
             CardService.newTextButton()
-              .setText('← Back to Estimate')
+              .setText('← Back')
               .setOnClickAction(CardService.newAction().setFunctionName('onPopCard_'))
           )
       )

@@ -311,7 +311,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   if (breakdown) {
     if (breakdown.product_supply) tableRow('Product supply', breakdown.product_supply);
     if (breakdown.manufacture)    tableRow('Manufacture', breakdown.manufacture);
-    if (breakdown.design_fee)     tableRow('Design fee', breakdown.design_fee);
+    // design_fee is intentionally excluded from the customer-facing PDF
     if (breakdown.accessories?.length) {
       breakdown.accessories.forEach((a) => tableRow(`  ${a.name}`, a.amount));
     }
