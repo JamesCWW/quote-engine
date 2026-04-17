@@ -137,7 +137,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     const maxWidth = opts.maxWidth ?? PW;
 
     // Wrap text if needed
-    const words = text.split(' ');
+    const words = sanitize(text).split(' ');
     const lines: string[] = [];
     let current = '';
     for (const word of words) {
@@ -289,7 +289,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   cursor += 10;
 
   // Wrap summary text manually
-  const summaryLines = wrapText(project_summary, fontReg, 10, PW);
+  const summaryLines = wrapText(sanitize(project_summary), fontReg, 10, PW);
   for (const line of summaryLines) {
     page.drawText(line, { x: ML, y: H - cursor - 10, font: fontReg, size: 10, color: cCharcoal });
     cursor += 14;
@@ -305,8 +305,8 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
 
   function tableRow(label: string, amount: number | string, bold = false) {
     const font_ = bold ? fontBold : fontReg;
-    const amtStr = typeof amount === 'number' ? fmtGBP(amount) : amount;
-    page.drawText(label, { x: ML, y: H - cursor - 10, font: font_, size: 10, color: cCharcoal });
+    const amtStr = typeof amount === 'number' ? fmtGBP(amount) : sanitize(String(amount));
+    page.drawText(sanitize(label), { x: ML, y: H - cursor - 10, font: font_, size: 10, color: cCharcoal });
     const amtW = font_.widthOfTextAtSize(amtStr, 10);
     page.drawText(amtStr, { x: ML + PW - amtW, y: H - cursor - 10, font: font_, size: 10, color: cCharcoal });
     cursor += 16;
@@ -353,9 +353,11 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     const f    = opts.bold ? fontBold : fontReg;
     const sz   = opts.size ?? 10;
     const col  = opts.color ?? cCharcoal;
-    const valW = f.widthOfTextAtSize(value, sz);
-    page.drawText(label, { x: ML, y: H - cursor - sz, font: f, size: sz, color: col });
-    page.drawText(value, { x: ML + PW - valW, y: H - cursor - sz, font: f, size: sz, color: col });
+    const safeLabel = sanitize(label);
+    const safeValue = sanitize(value);
+    const valW = f.widthOfTextAtSize(safeValue, sz);
+    page.drawText(safeLabel, { x: ML, y: H - cursor - sz, font: f, size: sz, color: col });
+    page.drawText(safeValue, { x: ML + PW - valW, y: H - cursor - sz, font: f, size: sz, color: col });
     cursor += sz * 1.7;
   }
 
@@ -371,7 +373,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     cursor += 2;
     drawRect(ML, cursor, PW, 32, cCharcoal);
     const totalLabel_ = 'TOTAL (inc. VAT)';
-    const totalVal_   = fmtGBP(incVat);
+    const totalVal_   = sanitize(fmtGBP(incVat));
     const totalValW_  = fontBold.widthOfTextAtSize(totalVal_, 13);
     page.drawText(totalLabel_, { x: ML + 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
     page.drawText(totalVal_,   { x: ML + PW - totalValW_ - 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
@@ -382,14 +384,14 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     const incLow  = price_low  + vatLow;
     const incHigh = price_high + vatHigh;
 
-    vatRow('ESTIMATE RANGE (ex. VAT)', `${fmtGBP(price_low)} – ${fmtGBP(price_high)}`);
-    vatRow('VAT (20%)', `${fmtGBP(vatLow)} – ${fmtGBP(vatHigh)}`, { color: cVatGrey });
+    vatRow('ESTIMATE RANGE (ex. VAT)', `${fmtGBP(price_low)} - ${fmtGBP(price_high)}`);
+    vatRow('VAT (20%)', `${fmtGBP(vatLow)} - ${fmtGBP(vatHigh)}`, { color: cVatGrey });
 
     // Total inc VAT — dark background banner
     cursor += 2;
     drawRect(ML, cursor, PW, 32, cCharcoal);
     const totalLabel_ = 'TOTAL (inc. VAT)';
-    const totalVal_   = `${fmtGBP(incLow)} – ${fmtGBP(incHigh)}`;
+    const totalVal_   = sanitize(`${fmtGBP(incLow)} - ${fmtGBP(incHigh)}`);
     const totalValW_  = fontBold.widthOfTextAtSize(totalVal_, 13);
     page.drawText(totalLabel_, { x: ML + 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
     page.drawText(totalVal_,   { x: ML + PW - totalValW_ - 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
@@ -414,7 +416,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   drawHRule(cursor);
   cursor += 10;
 
-  const footerLines = wrapText(footerText, fontReg, 8, PW);
+  const footerLines = wrapText(sanitize(footerText), fontReg, 8, PW);
   for (const line of footerLines) {
     page.drawText(line, { x: ML, y: H - cursor - 8, font: fontReg, size: 8, color: cMidGrey });
     cursor += 11;
@@ -425,7 +427,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     drawText('Terms & Conditions', ML, cursor, { font: fontBold, size: 8, color: cMidGrey });
     cursor += 12;
 
-    const tcLines = wrapText(profile.terms_and_conditions, fontReg, 7.5, PW);
+    const tcLines = wrapText(sanitize(profile.terms_and_conditions), fontReg, 7.5, PW);
     for (const line of tcLines) {
       page.drawText(line, { x: ML, y: H - cursor - 7.5, font: fontReg, size: 7.5, color: cMidGrey });
       cursor += 10;
@@ -436,6 +438,22 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   void py;
 
   return pdfDoc.save();
+}
+
+// ---------------------------------------------------------------------------
+// Character sanitisation — pdf-lib StandardFonts use WinAnsiEncoding; some
+// Unicode characters outside that set render as '?'. Replace them with safe
+// ASCII equivalents before any text reaches pdf-lib.
+// ---------------------------------------------------------------------------
+
+function sanitize(text: string): string {
+  return text
+    .replace(/×/g, 'x')   // multiplication sign  → x
+    .replace(/–/g, '-')   // en dash              → hyphen
+    .replace(/—/g, '-')   // em dash              → hyphen
+    .replace(/\u2018|\u2019/g, "'") // curly single quotes → apostrophe
+    .replace(/\u201C|\u201D/g, '"') // curly double quotes → straight quote
+    .replace(/\u2026/g, '...');     // ellipsis            → three dots
 }
 
 // ---------------------------------------------------------------------------
