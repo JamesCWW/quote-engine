@@ -559,7 +559,12 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     if (primaryGateComp) {
       const isAlumComp = primaryGateComp.material === 'aluminium';
       const isElectComp = primaryGateComp.is_electric === true;
-      for (const jt of allJobTypes) {
+      const isIronPedestrianComp = primaryGateComp.product_type === 'iron_pedestrian_gate';
+      const ironPedestrianJTsMulti = isIronPedestrianComp
+        ? allJobTypes.filter(jt => /iron/i.test(jt.job_type) && /pedestrian/i.test(jt.job_type))
+        : [];
+      const candidateJobTypesMulti = ironPedestrianJTsMulti.length > 0 ? ironPedestrianJTsMulti : allJobTypes;
+      for (const jt of candidateJobTypesMulti) {
         const jtl = jt.job_type.toLowerCase();
         let score = 0;
         if (isAlumComp && /alumin/.test(jtl)) score += 3;
@@ -643,9 +648,13 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
 
     // For mixed jobs, show a clear component summary rather than a single DB job type name
     const hasMixedComponents = railingComps.length > 0 && primaryGateComp != null;
-    const mixedJobLabel = hasMixedComponents
+    const rawGateJobLabel = hasMixedComponents
       ? `Mixed: ${primaryGateComp!.product_type.replace(/_/g, ' ')} + railings`
       : bestGateJT?.job_type ?? null;
+    const isIronGateComp = primaryGateComp != null && primaryGateComp.material !== 'aluminium';
+    const mixedJobLabel = (isIronGateComp && rawGateJobLabel)
+      ? rawGateJobLabel.replace(/aluminium/gi, 'iron')
+      : rawGateJobLabel;
 
     const breakdownMulti: DeterministicBreakdown = {
       product_supply: Math.round(totalSupply),
@@ -908,7 +917,13 @@ Return JSON only:
   let bestJobType: JobTypeRow | null = null;
   let bestScore = 0;
 
-  for (const jt of allJobTypes) {
+  const isIronPedestrian = spec.product_type === 'iron_pedestrian_gate';
+  const ironPedestrianJTs = isIronPedestrian
+    ? allJobTypes.filter(jt => /iron/i.test(jt.job_type) && /pedestrian/i.test(jt.job_type))
+    : [];
+  const candidateJobTypes = ironPedestrianJTs.length > 0 ? ironPedestrianJTs : allJobTypes;
+
+  for (const jt of candidateJobTypes) {
     const jtLower = jt.job_type.toLowerCase();
     let score = 0;
 
@@ -1214,7 +1229,11 @@ Return JSON only:
     price_low,
     price_high,
     minimum_applied: price_low > rawLow ? minimum : null,
-    job_type_matched: bestJobType?.job_type ?? null,
+    job_type_matched: (() => {
+      const raw = bestJobType?.job_type ?? null;
+      if (!raw || isAluminium) return raw;
+      return raw.replace(/aluminium/gi, 'iron');
+    })(),
     product_matched: productMatchedName,
     notes: productNotes,
   };

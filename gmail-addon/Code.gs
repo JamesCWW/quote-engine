@@ -1204,7 +1204,13 @@ function buildResultCard_(q, threadCount, messageId, summaryText) {
     lines.push('──────────────────────');
     lines.push('ESTIMATE:       £' + fmt_(q.price_low) + ' – £' + fmt_(q.price_high));
     if (db.minimum_applied) lines.push('(floor raised to minimum: £' + fmt_(db.minimum_applied) + ')');
-    if (db.job_type_matched) lines.push('Job type: ' + db.job_type_matched);
+    if (db.job_type_matched) {
+      var displayJobType = db.job_type_matched;
+      if (q.product_type && q.product_type.indexOf('iron') !== -1) {
+        displayJobType = displayJobType.replace(/aluminium/gi, 'iron');
+      }
+      lines.push('Job type: ' + displayJobType);
+    }
 
     card.addSection(
       CardService.newCardSection()
