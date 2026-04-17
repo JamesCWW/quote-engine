@@ -137,7 +137,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     const maxWidth = opts.maxWidth ?? PW;
 
     // Wrap text if needed
-    const words = sanitize(text).split(' ');
+    const words = sanitiseForPdf(text).split(' ');
     const lines: string[] = [];
     let current = '';
     for (const word of words) {
@@ -289,7 +289,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   cursor += 10;
 
   // Wrap summary text manually
-  const summaryLines = wrapText(sanitize(project_summary), fontReg, 10, PW);
+  const summaryLines = wrapText(sanitiseForPdf(project_summary), fontReg, 10, PW);
   for (const line of summaryLines) {
     page.drawText(line, { x: ML, y: H - cursor - 10, font: fontReg, size: 10, color: cCharcoal });
     cursor += 14;
@@ -305,8 +305,8 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
 
   function tableRow(label: string, amount: number | string, bold = false) {
     const font_ = bold ? fontBold : fontReg;
-    const amtStr = typeof amount === 'number' ? fmtGBP(amount) : sanitize(String(amount));
-    page.drawText(sanitize(label), { x: ML, y: H - cursor - 10, font: font_, size: 10, color: cCharcoal });
+    const amtStr = typeof amount === 'number' ? fmtGBP(amount) : sanitiseForPdf(String(amount));
+    page.drawText(sanitiseForPdf(label), { x: ML, y: H - cursor - 10, font: font_, size: 10, color: cCharcoal });
     const amtW = font_.widthOfTextAtSize(amtStr, 10);
     page.drawText(amtStr, { x: ML + PW - amtW, y: H - cursor - 10, font: font_, size: 10, color: cCharcoal });
     cursor += 16;
@@ -353,8 +353,8 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     const f    = opts.bold ? fontBold : fontReg;
     const sz   = opts.size ?? 10;
     const col  = opts.color ?? cCharcoal;
-    const safeLabel = sanitize(label);
-    const safeValue = sanitize(value);
+    const safeLabel = sanitiseForPdf(label);
+    const safeValue = sanitiseForPdf(value);
     const valW = f.widthOfTextAtSize(safeValue, sz);
     page.drawText(safeLabel, { x: ML, y: H - cursor - sz, font: f, size: sz, color: col });
     page.drawText(safeValue, { x: ML + PW - valW, y: H - cursor - sz, font: f, size: sz, color: col });
@@ -373,7 +373,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     cursor += 2;
     drawRect(ML, cursor, PW, 32, cCharcoal);
     const totalLabel_ = 'TOTAL (inc. VAT)';
-    const totalVal_   = sanitize(fmtGBP(incVat));
+    const totalVal_   = sanitiseForPdf(fmtGBP(incVat));
     const totalValW_  = fontBold.widthOfTextAtSize(totalVal_, 13);
     page.drawText(totalLabel_, { x: ML + 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
     page.drawText(totalVal_,   { x: ML + PW - totalValW_ - 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
@@ -391,7 +391,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     cursor += 2;
     drawRect(ML, cursor, PW, 32, cCharcoal);
     const totalLabel_ = 'TOTAL (inc. VAT)';
-    const totalVal_   = sanitize(`${fmtGBP(incLow)} - ${fmtGBP(incHigh)}`);
+    const totalVal_   = sanitiseForPdf(`${fmtGBP(incLow)} - ${fmtGBP(incHigh)}`);
     const totalValW_  = fontBold.widthOfTextAtSize(totalVal_, 13);
     page.drawText(totalLabel_, { x: ML + 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
     page.drawText(totalVal_,   { x: ML + PW - totalValW_ - 8, y: H - cursor - 21, font: fontBold, size: 13, color: cWhite });
@@ -416,7 +416,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   drawHRule(cursor);
   cursor += 10;
 
-  const footerLines = wrapText(sanitize(footerText), fontReg, 8, PW);
+  const footerLines = wrapText(sanitiseForPdf(footerText), fontReg, 8, PW);
   for (const line of footerLines) {
     page.drawText(line, { x: ML, y: H - cursor - 8, font: fontReg, size: 8, color: cMidGrey });
     cursor += 11;
@@ -427,7 +427,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     drawText('Terms & Conditions', ML, cursor, { font: fontBold, size: 8, color: cMidGrey });
     cursor += 12;
 
-    const tcLines = wrapText(sanitize(profile.terms_and_conditions), fontReg, 7.5, PW);
+    const tcLines = wrapText(sanitiseForPdf(profile.terms_and_conditions), fontReg, 7.5, PW);
     for (const line of tcLines) {
       page.drawText(line, { x: ML, y: H - cursor - 7.5, font: fontReg, size: 7.5, color: cMidGrey });
       cursor += 10;
@@ -444,16 +444,25 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
 // Character sanitisation — pdf-lib StandardFonts use WinAnsiEncoding; some
 // Unicode characters outside that set render as '?'. Replace them with safe
 // ASCII equivalents before any text reaches pdf-lib.
+// £ (\u00A3) is valid in WinAnsiEncoding and is preserved as-is.
 // ---------------------------------------------------------------------------
 
-function sanitize(text: string): string {
+function sanitiseForPdf(text: string): string {
   return text
-    .replace(/×/g, 'x')   // multiplication sign  → x
-    .replace(/–/g, '-')   // en dash              → hyphen
-    .replace(/—/g, '-')   // em dash              → hyphen
-    .replace(/\u2018|\u2019/g, "'") // curly single quotes → apostrophe
-    .replace(/\u201C|\u201D/g, '"') // curly double quotes → straight quote
-    .replace(/\u2026/g, '...');     // ellipsis            → three dots
+    .replace(/×|\u00d7/g, 'x')                  // multiplication sign  → x
+    .replace(/–|\u2013/g, '-')                   // en dash              → hyphen
+    .replace(/—|\u2014/g, '-')                   // em dash              → hyphen
+    .replace(/\u2018|\u2019/g, "'")              // curly single quotes  → apostrophe
+    .replace(/\u201C|\u201D/g, '"')              // curly double quotes  → straight quote
+    .replace(/\u2026/g, '...')                   // ellipsis             → three dots
+    .replace(/[^\x00-\x7F\u00A3]/g, (char) => { // catch-all non-ASCII (preserve £)
+      const map: Record<string, string> = {
+        '\u00d7': 'x',
+        '\u2013': '-',
+        '\u2014': '-',
+      };
+      return map[char] ?? '?';
+    });
 }
 
 // ---------------------------------------------------------------------------
