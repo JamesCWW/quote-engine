@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { createAdminClient } from '@/lib/supabase/admin';
 
 // ---------------------------------------------------------------------------
@@ -106,9 +106,10 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
   const MR = 50;           // right margin
   const PW = W - ML - MR; // printable width
 
-  // pdf-lib y=0 is bottom; we track a "cursor" from the top
-  // cursor is the NEXT y position in top-left coordinates
-  let cursor = H - 50; // start 50pt from top
+  // pdf-lib y=0 is bottom; we track a "cursor" in top-left coordinates
+  // (distance from the top of the page). drawText/drawRect/drawHRule all
+  // convert to pdf-lib coords via  y = H - topY - size.
+  let cursor = 50; // start 50pt from top
 
   // Convert top-left y to pdf-lib bottom-left y
   const py = (topY: number) => topY;
@@ -377,8 +378,7 @@ async function buildPdf(body: PdfRequestBody): Promise<Uint8Array> {
     }
   }
 
-  // Suppress unused variable warning
-  void py; void degrees;
+  void py;
 
   return pdfDoc.save();
 }
@@ -422,6 +422,18 @@ export async function POST(req: NextRequest) {
     if (!body.tenant_id || !body.customer_name || !body.project_summary) {
       return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
     }
+
+    console.log('[estimates/pdf] generating PDF', {
+      tenant_id:       body.tenant_id,
+      customer_name:   body.customer_name,
+      customer_email:  body.customer_email ?? null,
+      price_low:       body.price_low,
+      price_high:      body.price_high,
+      has_breakdown:   !!body.breakdown,
+      has_components:  Array.isArray(body.components) ? body.components.length : 0,
+      summary_length:  body.project_summary?.length ?? 0,
+      valid_days:      body.valid_days ?? 30,
+    });
 
     const pdfBytes = await buildPdf(body);
 
