@@ -48,6 +48,7 @@ export interface ExtractedSpec {
   components: JobComponent[] | null;
   stated_install_days: number | null;
   stated_engineers: number | null;
+  is_single_leaf: boolean | null;
   confidence_per_field: Record<string, 'confirmed' | 'assumed' | 'unknown'>;
 }
 
@@ -107,6 +108,7 @@ Return ONLY valid JSON with this exact shape:
   "stated_post_count": number | null,
   "stated_install_days": number | null,
   "stated_engineers": number | null,
+  "is_single_leaf": true | false | null,
   "components": [
     {
       "product_type": "iron_driveway_gates" | "aluminium_driveway_gates" | "iron_pedestrian_gate" | "aluminium_pedestrian_gate" | "railings" | "prefab_railings" | "wall_top_railings" | "handrails" | "juliette_balcony" | "unknown",
@@ -157,6 +159,7 @@ Conversion rules:
 - stated_post_count: if the enquiry explicitly states a total post count (e.g. "6 posts", "6 posts total", "with 6 gate posts"), extract that number. null if not mentioned.
 - stated_install_days: if the summary or customer explicitly states the number of install days (e.g. "1 day for 2 engineers", "2-day install"), extract that number. null if not mentioned.
 - stated_engineers: if explicitly stated alongside stated_install_days (e.g. "1 day for 2 engineers"), extract the engineer count. null if not mentioned.
+- is_single_leaf: set to true ONLY if the enquiry explicitly says "single leaf", "single gate", or "single door". null otherwise (default assumption is double/2-leaf for driveway gates).
 - prefab_railings: use this type for prefabricated / panel railings sold by length; "railings" is for bespoke/custom
 - price_per_metre: if the customer states a per-metre price for railings, capture it here (in GBP)
 
@@ -529,7 +532,11 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
       if (isGateComp && isElectricComp) {
         const fob = findAccItem(/remote.*fob|fob/i);
         if (fob) compAccessories.push({ name: 'Remote fobs (Qty: 2)', amount: fob.helions_price * 2 });
-        const motorKit = findAccItem(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i);
+        const isCompSingleLeaf = spec.is_single_leaf === true;
+        const motorKit = isCompSingleLeaf
+          ? (findAccItem(/1[\s-]?leaf|single[\s-]?leaf/i) ?? findAccItem(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i))
+          : (findAccItem(/2[\s-]?leaf|double/i) ?? findAccItem(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i));
+        console.log('MOTOR KIT:', motorKit?.item_name, motorKit?.helions_price);
         if (motorKit) compAccessories.push({ name: motorKit.item_name, amount: motorKit.helions_price });
         const photocell = findAccItem(/photocell|dir\b/i);
         if (photocell) compAccessories.push({ name: photocell.item_name, amount: photocell.helions_price });
@@ -558,7 +565,7 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     let bestScore = 0;
     if (primaryGateComp) {
       const isAlumComp = primaryGateComp.material === 'aluminium';
-      const isElectComp = primaryGateComp.is_electric === true;
+      const isElectComp = primaryGateComp.is_electric === true || spec.has_automation === true;
       const isIronPedestrianComp = primaryGateComp.product_type === 'iron_pedestrian_gate';
       const ironPedestrianJTsMulti = isIronPedestrianComp
         ? allJobTypes.filter(jt => /iron/i.test(jt.job_type) && /pedestrian/i.test(jt.job_type))
@@ -575,6 +582,18 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
         if (primaryGateComp.product_type.includes('pedestrian') && /driveway/.test(jtl)) score -= 10;
         if (primaryGateComp.product_type.includes('driveway') && /driveway/.test(jtl)) score += 2;
         if (score > bestScore) { bestScore = score; bestGateJT = jt; }
+      }
+
+      // Force electric job type when automation is confirmed for driveway gates
+      const isDrivewayGateComp = primaryGateComp.product_type.includes('driveway');
+      if (isElectComp && isDrivewayGateComp) {
+        const electricJT = isAlumComp
+          ? allJobTypes.find((jt) => /aluminium/i.test(jt.job_type) && /driveway/i.test(jt.job_type) && /electric/i.test(jt.job_type))
+          : allJobTypes.find((jt) => /iron/i.test(jt.job_type) && /driveway/i.test(jt.job_type) && /electric|automat/i.test(jt.job_type));
+        if (electricJT) {
+          console.log(`[det-engine] Multi-component driveway gate (electric) — overriding job type to "${electricJT.job_type}"`);
+          bestGateJT = electricJT;
+        }
       }
     }
 
@@ -602,6 +621,15 @@ export async function runDeterministicEngine(params: QuoteParams): Promise<{
     // Gate install is tracked as the primary installation line.
     // Railing install is already pushed into allComponentAccessories above.
     const gateInstallCostRounded = Math.round(gateInstallCost);
+
+    // GSM intercom
+    if (spec.has_intercom === true) {
+      const gsm = allAcc.find((a) => /gsm|intercom/i.test(a.item_name));
+      allComponentAccessories.push(gsm
+        ? { name: gsm.item_name, amount: gsm.helions_price }
+        : { name: 'GSM Intercom system', amount: 595 }
+      );
+    }
 
     // Design fee
     const designFee = (rates as typeof rates & { design_fee?: number | null })?.design_fee ?? null;
@@ -949,22 +977,44 @@ Return JSON only:
     }
   }
 
-  // Special override: aluminium driveway gates default to "concrete in posts" unless enquiry
-  // explicitly says "brick to brick" or "no posts".
+  // Special override: aluminium driveway gates.
+  // When electric/automated → force the electric job type.
+  // Otherwise default to "concrete in posts" unless enquiry explicitly says "brick to brick" or "no posts".
   if (spec.product_type === 'aluminium_driveway_gates') {
-    const isBrickToBrick = /brick.?to.?brick|no posts/i.test(enquiry_text);
-    if (!isBrickToBrick) {
-      const concreteInPosts = allJobTypes.find(
-        (jt) => /concrete.?in.?posts?/i.test(jt.job_type) && /driveway/i.test(jt.job_type)
+    if (isElectric) {
+      const electricJT = allJobTypes.find(
+        (jt) => /aluminium/i.test(jt.job_type) && /driveway/i.test(jt.job_type) && /electric/i.test(jt.job_type)
       );
-      if (concreteInPosts) {
-        console.log(
-          `[det-engine] Aluminium driveway gate — overriding job type to "${concreteInPosts.job_type}" (posts assumed unless "brick to brick" specified)`
-        );
-        bestJobType = concreteInPosts;
+      if (electricJT) {
+        console.log(`[det-engine] Aluminium driveway gate (electric) — overriding job type to "${electricJT.job_type}"`);
+        bestJobType = electricJT;
       }
     } else {
-      console.log(`[det-engine] Aluminium driveway gate — "brick to brick" detected, keeping scored job type`);
+      const isBrickToBrick = /brick.?to.?brick|no posts/i.test(enquiry_text);
+      if (!isBrickToBrick) {
+        const concreteInPosts = allJobTypes.find(
+          (jt) => /concrete.?in.?posts?/i.test(jt.job_type) && /driveway/i.test(jt.job_type)
+        );
+        if (concreteInPosts) {
+          console.log(
+            `[det-engine] Aluminium driveway gate — overriding job type to "${concreteInPosts.job_type}" (posts assumed unless "brick to brick" specified)`
+          );
+          bestJobType = concreteInPosts;
+        }
+      } else {
+        console.log(`[det-engine] Aluminium driveway gate — "brick to brick" detected, keeping scored job type`);
+      }
+    }
+  }
+
+  // Special override: iron driveway gates electric → force the electric job type.
+  if (spec.product_type === 'iron_driveway_gates' && isElectric) {
+    const electricJT = allJobTypes.find(
+      (jt) => /iron/i.test(jt.job_type) && /driveway/i.test(jt.job_type) && /electric|automat/i.test(jt.job_type)
+    );
+    if (electricJT) {
+      console.log(`[det-engine] Iron driveway gate (electric) — overriding job type to "${electricJT.job_type}"`);
+      bestJobType = electricJT;
     }
   }
 
@@ -1102,7 +1152,11 @@ Return JSON only:
       const fob = findAcc(/remote.*fob|fob/i);
       if (fob) accessories.push({ name: 'Remote fobs (Qty: 2)', amount: fob.helions_price * 2 });
 
-      const motorKit = findAcc(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i);
+      const isSingleLeafGate = spec.is_single_leaf === true;
+      const motorKit = isSingleLeafGate
+        ? (findAcc(/1[\s-]?leaf|single[\s-]?leaf/i) ?? findAcc(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i))
+        : (findAcc(/2[\s-]?leaf|double/i) ?? findAcc(/frog.?x|frog.*2.?leaf|2.?leaf.*kit|motor.*kit/i));
+      console.log('MOTOR KIT:', motorKit?.item_name, motorKit?.helions_price);
       if (motorKit) accessories.push({ name: motorKit.item_name, amount: motorKit.helions_price });
 
       const photocell = findAcc(/photocell|dir\b/i);
@@ -1114,6 +1168,15 @@ Return JSON only:
       if (rates?.consumer_unit_connection) {
         accessories.push({ name: 'Consumer unit connection', amount: rates.consumer_unit_connection });
       }
+    }
+
+    // GSM intercom
+    if (spec.has_intercom === true) {
+      const gsm = findAcc(/gsm|intercom/i);
+      accessories.push(gsm
+        ? { name: gsm.item_name, amount: gsm.helions_price }
+        : { name: 'GSM Intercom system', amount: 595 }
+      );
     }
 
     // Aluminium gates: add custom size fee
